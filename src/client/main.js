@@ -17,12 +17,12 @@ const peerConnection = new RTCPeerConnection(servers);
 const dataChannel = peerConnection.createDataChannel("chat");
 
 dataChannel.onopen = () => {
-  // console.log("DataChannel is open!");
+  console.log("DataChannel is open!");
   // dataChannel.send("Hello!");
 };
 
 dataChannel.onmessage = (event) => {
-  // console.log("Received message: ", event.data);
+  console.log("Received message: ", event.data);
 };
 
 peerConnection.onicecandidate = async (event) => {
@@ -34,15 +34,32 @@ peerConnection.onicecandidate = async (event) => {
 async function createOffer() {
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
+
+  socket.send({ offer: offer });
 }
 
 async function init() {
-  await createOffer();
+  socket.emit("create or join", "aaa");
+  // await createOffer();
 }
 
 init();
 
-socket.on("joined", (room) => {
-  console.log("socket joined ::: ");
-  socket.emit("ready", roomNumber);
-});
+async function handleUserCreated(data) {
+  const { type, userId } = data;
+  console.log("A new user created the channel: ", userId);
+  await createOffer();
+}
+
+async function handleUserJoined(data) {
+  const { type, userId } = data;
+  console.log("A new user joined the channel: ", userId);
+}
+
+socket.on("create", handleUserCreated);
+socket.on("join", handleUserJoined);
+
+// socket.on("MemberJoined", (room) => {
+//   console.log("socket joined ::: ");
+//   socket.emit("ready", roomNumber);
+// });
