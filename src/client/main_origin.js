@@ -62,6 +62,16 @@ dataChannel.onerror = (error) => {
 function sendCandidate(candidate) {
   console.log("candidate 보냄");
   signalingSocket.send(JSON.stringify({ candidate }));
+
+  const candidates = sessionStorage.getItem("candidates");
+  if (candidates) {
+    const obj = [JSON.parse(candidates)];
+    console.log("obj : ", obj);
+    obj.push(candidate);
+    sessionStorage.setItem("candidates", JSON.stringify(obj));
+  } else {
+    sessionStorage.setItem("candidates", JSON.stringify(candidate));
+  }
 }
 
 peerConnection.onicecandidate = async (event) => {
@@ -90,7 +100,7 @@ async function createOffer() {
 
   // Offer를 signaling 서버를 통해 첫 번째 사용자에게 전달
   signalingSocket.send(JSON.stringify({ offer }));
-
+  sessionStorage.setItem("offer", JSON.stringify(offer));
   console.log("offer 보냄");
 }
 
@@ -110,7 +120,26 @@ document.onreadystatechange = () => {
 
 // 연결이 열리면
 signalingSocket.onopen = () => {
-  signalingSocket.send("userLength");
+  const offer = JSON.parse(sessionStorage.getItem("offer"));
+  const answer = JSON.parse(sessionStorage.getItem("answer"));
+  const candidates = JSON.parse(sessionStorage.getItem("candidates"));
+
+  console.log("offer : ", offer);
+  console.log("answer : ", answer);
+  console.log("candidates : ", candidates);
+
+  if (offer && answer && candidates) {
+    console.log("기존 정보 있음");
+    // 저장된 데이터를 통해 연결 복원
+    peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    peerConnection.setLocalDescription(new RTCSessionDescription(answer));
+    candidates.forEach((candidate) => {
+      peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    });
+  } else {
+    console.log("기존 정보 없음");
+    signalingSocket.send("userLength");
+  }
 };
 
 signalingSocket.onmessage = async (message) => {
@@ -133,6 +162,9 @@ signalingSocket.onmessage = async (message) => {
     // Answer를 signaling 서버를 통해 첫 번째 사용자에게 전달
     signalingSocket.send(JSON.stringify({ answer }));
 
+    sessionStorage.setItem("offer", JSON.stringify(msgData.offer));
+    sessionStorage.setItem("answer", JSON.stringify(answer));
+
     console.log("answer 보냄");
   }
 
@@ -142,13 +174,43 @@ signalingSocket.onmessage = async (message) => {
     await peerConnection.setRemoteDescription(
       new RTCSessionDescription(msgData.answer)
     );
+
+    sessionStorage.setItem("answer", JSON.stringify(msgData.answer));
   }
 
   if (msgData.candidate) {
     console.log("candidate 받음");
     // console.log("msgData.candidate : ", msgData.candidate);
     peerConnection.addIceCandidate(new RTCIceCandidate(msgData.candidate));
+
+    // sessionStorage.setItem("candidates", JSON.stringify(msgData.candidate));
+    const candidates = sessionStorage.getItem("candidates");
+    if (candidates) {
+      const obj = [JSON.parse(candidates)];
+      console.log("obj : ", obj);
+
+      obj.push(msgData.candidate);
+      sessionStorage.setItem("candidates", JSON.stringify(obj));
+    } else {
+      sessionStorage.setItem("candidates", JSON.stringify(msgData.candidate));
+    }
   }
 };
+
+// 새로고침 후 복원 (다시 offer, answer, candidate 사용)
+function restoreSessionData() {
+  const offer = JSON.parse(sessionStorage.getItem("offer"));
+  const answer = JSON.parse(sessionStorage.getItem("answer"));
+  const candidates = JSON.parse(sessionStorage.getItem("candidates"));
+
+  if (offer && answer && candidates) {
+    // 저장된 데이터를 통해 연결 복원
+    peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    peerConnection.setLocalDescription(new RTCSessionDescription(answer));
+    candidates.forEach((candidate) => {
+      peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    });
+  }
+}
 
 // =====================================================================

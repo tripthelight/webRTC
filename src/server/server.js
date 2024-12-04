@@ -2,44 +2,36 @@ import { WebSocketServer } from "ws";
 import { v4 as uuidv4 } from "uuid";
 
 // WebSocket 서버 생성
-const wss = new WebSocketServer({ port: 4000 });
+const WSS = new WebSocketServer({ port: 4000 });
 
 // 각 Room을 관리하는 객체
 const rooms = {};
-let offerState = true;
 
 // 연결된 클라이언트 처리
-wss.on("connection", (ws) => {
+WSS.on("connection", (socket) => {
   let assignedRoom;
 
   // 방 할당 로직
   for (const [room, clients] of Object.entries(rooms)) {
     if (clients.length < 2) {
       assignedRoom = room;
-      rooms[room].push(ws);
+      rooms[room].push(socket);
       break;
     }
   }
 
   if (!assignedRoom) {
     assignedRoom = `room-${uuidv4()}`;
-    rooms[assignedRoom] = [ws];
+    rooms[assignedRoom] = [socket];
   }
 
-  ws.room = assignedRoom;
+  socket.room = assignedRoom;
 
-  ws.on("message", (message) => {
-    const roomClients = rooms[ws.room];
+  socket.on("message", (message) => {
+    const roomClients = rooms[socket.room];
 
     if (message.toString() === "userLength") {
-      // roomClients.forEach((client) => {
-      //   if (client !== ws) {
-      //     client.send(
-      //       JSON.stringify({ type: "userLength", length: roomClients.length })
-      //     );
-      //   }
-      // });
-      ws.send(
+      socket.send(
         JSON.stringify({ type: "userLength", length: roomClients.length })
       );
     } else {
@@ -48,7 +40,7 @@ wss.on("connection", (ws) => {
       // Offer 처리
       if (msgData.offer) {
         roomClients.forEach((client) => {
-          if (client !== ws) {
+          if (client !== socket) {
             client.send(JSON.stringify({ offer: msgData.offer }));
           }
         });
@@ -57,7 +49,7 @@ wss.on("connection", (ws) => {
       // Answer 처리
       if (msgData.answer) {
         roomClients.forEach((client) => {
-          if (client !== ws) {
+          if (client !== socket) {
             client.send(JSON.stringify({ answer: msgData.answer }));
           }
         });
@@ -66,7 +58,7 @@ wss.on("connection", (ws) => {
       // Candidate 처리
       if (msgData.candidate) {
         roomClients.forEach((client) => {
-          if (client !== ws) {
+          if (client !== socket) {
             client.send(JSON.stringify({ candidate: msgData.candidate }));
           }
         });
@@ -75,10 +67,12 @@ wss.on("connection", (ws) => {
   });
 
   // 클라이언트 연결 종료 시
-  ws.on("close", () => {
-    rooms[ws.room] = rooms[ws.room].filter((client) => client !== ws);
-    if (rooms[ws.room].length === 0) {
-      delete rooms[ws.room]; // 방이 비어 있으면 삭제
+  socket.on("close", () => {
+    rooms[socket.room] = rooms[socket.room].filter(
+      (client) => client !== socket
+    );
+    if (rooms[socket.room].length === 0) {
+      delete rooms[socket.room]; // 방이 비어 있으면 삭제
     }
   });
 });
