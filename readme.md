@@ -8,4 +8,5 @@
 
 3. 진행단계
    - 새로고침 후 재연결 테스트 중
-   - https://chatgpt.com/c/674fbf5d-0dd4-800f-89b7-5701d0861182 // 새로고침 후 복원 (다시 offer, answer, candidate 사용)
+   - peerConnection, dataChannel, peerConnection.onicecandidate, dataChannel.onmessage 을 먼저 설정하고, offer, answer를 주고 받아야 새로고침 해도 재연결이 됨
+   - TODO: server.js에서 연결되어 있는 user를 유지시켜야 하나??
