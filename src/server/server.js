@@ -64,6 +64,8 @@ WSS.on("connection", (socket) => {
         });
       }
     }
+
+    console.log("message socket.room :::::::::::::::: ", socket.room);
   });
 
   // 클라이언트 연결 종료 시
@@ -74,6 +76,7 @@ WSS.on("connection", (socket) => {
     if (rooms[socket.room].length === 0) {
       delete rooms[socket.room]; // 방이 비어 있으면 삭제
     }
+    console.log("close socket.room :::::::::::::::: ", socket.room);
   });
 });
 

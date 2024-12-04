@@ -11,80 +11,73 @@ const servers = {
     },
   ],
 };
-const peerConnection = new RTCPeerConnection(servers);
 
-// DataChannel 생성
-// DataChannel이 없으면 candidate를 안찾음
-const dataChannel = peerConnection.createDataChannel("sendChannel");
+let peerConnection;
+let dataChannel;
 
-// 메시지 전송 함수
-/*
-const sendTapEvent = () => {
-  if (dataChannel && dataChannel.readyState === "open") {
-    const obj = {
-      message: "hello !!!!!!!!!!!!!!!!",
-      timestamp: new Date(),
+function initConnect() {
+  return new Promise((resolve) => {
+    peerConnection = new RTCPeerConnection(servers);
+    dataChannel = peerConnection.createDataChannel("sendChannel");
+
+    peerConnection.ondatachannel = (event) => {
+      const onDataChannel = event.channel;
+      const RTC_BTN = document.querySelector(".rtc-btn");
+      if (onDataChannel && onDataChannel.readyState === "open") {
+        RTC_BTN.onclick = () => {
+          onDataChannel.send("hello !!!!!!!!");
+        };
+      }
     };
-    dataChannel.send(JSON.stringify(obj));
-  } else {
-    console.log("dataChannel not ready...");
-  }
-};
-*/
 
-peerConnection.ondatachannel = (event) => {
-  const onDataChannel = event.channel;
-  const RTC_BTN = document.querySelector(".rtc-btn");
-  if (onDataChannel && onDataChannel.readyState === "open") {
-    RTC_BTN.onclick = () => {
-      onDataChannel.send("hello !!!!!!!!");
+    dataChannel.onopen = () => {
+      // console.log("dataChannel is open!");
     };
-  }
-};
 
-dataChannel.onopen = () => {
-  // console.log("dataChannel is open!");
-};
+    dataChannel.onmessage = (event) => {
+      console.log("Received message: ", event.data);
+    };
 
-dataChannel.onmessage = (event) => {
-  console.log("Received message: ", event.data);
-};
+    dataChannel.onclose = () => {
+      // console.log("dataChannel is closed!");
+    };
 
-dataChannel.onclose = () => {
-  // console.log("dataChannel is closed!");
-};
+    dataChannel.onerror = (error) => {
+      // console.log("DataChannel error: ", error);
+    };
 
-dataChannel.onerror = (error) => {
-  // console.log("DataChannel error: ", error);
-};
+    // ICE 후보를 다른 브라우저로 전송 (같은 방 안에서만 전송)
+    function sendCandidate(candidate) {
+      console.log("candidate 보냄");
+      signalingSocket.send(JSON.stringify({ candidate }));
+    }
 
-// ICE 후보를 다른 브라우저로 전송 (같은 방 안에서만 전송)
-function sendCandidate(candidate) {
-  console.log("candidate 보냄");
-  signalingSocket.send(JSON.stringify({ candidate }));
+    peerConnection.onicecandidate = async (event) => {
+      if (event.candidate) {
+        sendCandidate(event.candidate);
+      }
+    };
+
+    peerConnection.oniceconnectionstatechange = (event) => {
+      // console.log("ICE Connection State: ", peerConnection.iceConnectionState);
+      if (peerConnection.iceConnectionState === "connected") {
+        // console.log("Bridges are successfully connected!");
+      }
+    };
+
+    peerConnection.onconnectionstatechange = (event) => {
+      // console.log("Peer connection state: ", peerConnection.connectionState);
+      if (dataChannel.readyState === "open") {
+        // console.log("Data channel is open, communication can begin!");
+      }
+    };
+
+    resolve();
+  });
 }
 
-peerConnection.onicecandidate = async (event) => {
-  if (event.candidate) {
-    sendCandidate(event.candidate);
-  }
-};
-
-peerConnection.oniceconnectionstatechange = (event) => {
-  // console.log("ICE Connection State: ", peerConnection.iceConnectionState);
-  if (peerConnection.iceConnectionState === "connected") {
-    // console.log("Bridges are successfully connected!");
-  }
-};
-
-peerConnection.onconnectionstatechange = (event) => {
-  // console.log("Peer connection state: ", peerConnection.connectionState);
-  if (dataChannel.readyState === "open") {
-    // console.log("Data channel is open, communication can begin!");
-  }
-};
-
 async function createOffer() {
+  await initConnect();
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
 
@@ -94,35 +87,26 @@ async function createOffer() {
   console.log("offer 보냄");
 }
 
-/*
-async function init() {
-  // await createOffer(); // 첫번째 접속한 사람만 offer를 보내야함
-}
-
-document.onreadystatechange = () => {
-  const state = document.readyState;
-  if (state === "interactive") {
-  } else if (state === "complete") {
-    init();
-  }
-};
-*/
-
 // 연결이 열리면
 signalingSocket.onopen = () => {
   signalingSocket.send("userLength");
 };
 
+// signalingServer 응답
 signalingSocket.onmessage = async (message) => {
+  const entryOrder = window.sessionStorage.getItem("entryOrder");
+
   const msgData = JSON.parse(message.data);
 
   if (msgData.type === "userLength") {
+    window.sessionStorage.setItem("entryOrder", "entryOrder");
     if (msgData.length === 2) {
       await createOffer(); // 두번째 접속한 사람만 offer를 보내야함
     }
   }
 
   if (msgData.offer) {
+    await initConnect();
     console.log("offer 받음");
     // console.log("msgData.offer : ", msgData.offer);
     await peerConnection.setRemoteDescription(
