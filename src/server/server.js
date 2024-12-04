@@ -32,11 +32,16 @@ wss.on("connection", (ws) => {
     const roomClients = rooms[ws.room];
 
     if (message.toString() === "userLength") {
-      roomClients.forEach((client) => {
-        client.send(
-          JSON.stringify({ type: "userLength", length: roomClients.length })
-        );
-      });
+      // roomClients.forEach((client) => {
+      //   if (client !== ws) {
+      //     client.send(
+      //       JSON.stringify({ type: "userLength", length: roomClients.length })
+      //     );
+      //   }
+      // });
+      ws.send(
+        JSON.stringify({ type: "userLength", length: roomClients.length })
+      );
     } else {
       const msgData = JSON.parse(message);
 
