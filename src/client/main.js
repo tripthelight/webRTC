@@ -14,6 +14,7 @@ const servers = {
 
 let peerConnection;
 let dataChannel;
+const room = () => window.sessionStorage.getItem("room");
 
 function initConnect() {
   return new Promise((resolve) => {
@@ -49,7 +50,14 @@ function initConnect() {
     // ICE 후보를 다른 브라우저로 전송 (같은 방 안에서만 전송)
     function sendCandidate(candidate) {
       console.log("candidate 보냄");
-      signalingSocket.send(JSON.stringify({ candidate }));
+      // signalingSocket.send(JSON.stringify({ candidate }));
+      signalingSocket.send(
+        JSON.stringify({
+          type: "candidate",
+          room: room(),
+          data: JSON.stringify({ candidate }),
+        })
+      );
     }
 
     peerConnection.onicecandidate = async (event) => {
@@ -78,60 +86,74 @@ function initConnect() {
 
 async function createOffer() {
   await initConnect();
+
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
 
   // Offer를 signaling 서버를 통해 첫 번째 사용자에게 전달
-  signalingSocket.send(JSON.stringify({ offer }));
+  signalingSocket.send(
+    JSON.stringify({
+      type: "offer",
+      room: room(),
+      data: JSON.stringify({ offer }),
+    })
+  );
 
   console.log("offer 보냄");
 }
 
-// 연결이 열리면
+// signalingServer 연결이 열리면
 signalingSocket.onopen = () => {
-  signalingSocket.send("userLength");
+  signalingSocket.send(JSON.stringify({ type: "userLength" }));
 };
 
 // signalingServer 응답
 signalingSocket.onmessage = async (message) => {
-  const entryOrder = window.sessionStorage.getItem("entryOrder");
-
   const msgData = JSON.parse(message.data);
 
   if (msgData.type === "userLength") {
-    window.sessionStorage.setItem("entryOrder", "entryOrder");
+    // 내 room을 sessionStorage에 저장
+    if (!window.sessionStorage.getItem("room")) {
+      window.sessionStorage.setItem("room", msgData.room);
+    }
+
     if (msgData.length === 2) {
       await createOffer(); // 두번째 접속한 사람만 offer를 보내야함
     }
   }
 
-  if (msgData.offer) {
+  if (msgData.type === "offer") {
+    console.log("offer 받음 ::: ", JSON.parse(msgData.data).offer);
     await initConnect();
-    console.log("offer 받음");
-    // console.log("msgData.offer : ", msgData.offer);
-    await peerConnection.setRemoteDescription(
-      new RTCSessionDescription(msgData.offer)
-    );
+
+    const offer = JSON.parse(msgData.data).offer;
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
     // Answer를 signaling 서버를 통해 첫 번째 사용자에게 전달
-    signalingSocket.send(JSON.stringify({ answer }));
+    signalingSocket.send(
+      JSON.stringify({
+        type: "answer",
+        room: room(),
+        data: JSON.stringify({ answer }),
+      })
+    );
 
     console.log("answer 보냄");
   }
 
-  if (msgData.answer) {
-    console.log("answer 받음");
-    // console.log("msgData.answer : ", msgData.answer);
+  if (msgData.type === "answer") {
+    console.log("answer 받음 ::: ", JSON.parse(msgData.data).answer);
+    const answer = JSON.parse(msgData.data).answer;
     await peerConnection.setRemoteDescription(
-      new RTCSessionDescription(msgData.answer)
+      new RTCSessionDescription(answer)
     );
   }
 
-  if (msgData.candidate) {
-    console.log("candidate 받음");
-    // console.log("msgData.candidate : ", msgData.candidate);
-    peerConnection.addIceCandidate(new RTCIceCandidate(msgData.candidate));
+  if (msgData.type === "candidate") {
+    console.log("candidate 받음 ::: ", JSON.parse(msgData.data).candidate);
+    const candidate = JSON.parse(msgData.data).candidate;
+    peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
   }
 };
 

@@ -9,4 +9,5 @@
 3. 진행단계
    - 새로고침 후 재연결 테스트 중
    - peerConnection, dataChannel, peerConnection.onicecandidate, dataChannel.onmessage 을 먼저 설정하고, offer, answer를 주고 받아야 새로고침 해도 재연결이 됨
-   - TODO: server.js에서 연결되어 있는 user를 유지시켜야 하나??
+   - TODO: server.js에서 연결되어 있는 user 연결이 좀 이상해..
+   - 여러 브라우저에서 테스트 필요

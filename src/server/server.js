@@ -28,44 +28,51 @@ WSS.on("connection", (socket) => {
   socket.room = assignedRoom;
 
   socket.on("message", (message) => {
+    const msgData = JSON.parse(message);
+    const sendRoom = msgData.room;
+    // const roomClients = sendRoom ? rooms[sendRoom] : rooms[socket.room];
     const roomClients = rooms[socket.room];
 
-    if (message.toString() === "userLength") {
+    if (msgData.type === "userLength") {
       socket.send(
-        JSON.stringify({ type: "userLength", length: roomClients.length })
+        JSON.stringify({
+          type: "userLength",
+          length: roomClients.length,
+          room: socket.room,
+        })
       );
     } else {
-      const msgData = JSON.parse(message);
-
       // Offer 처리
-      if (msgData.offer) {
+      if (msgData.type === "offer") {
         roomClients.forEach((client) => {
           if (client !== socket) {
-            client.send(JSON.stringify({ offer: msgData.offer }));
+            client.send(JSON.stringify({ type: "offer", data: msgData.data }));
           }
         });
       }
 
       // Answer 처리
-      if (msgData.answer) {
+      if (msgData.type === "answer") {
         roomClients.forEach((client) => {
           if (client !== socket) {
-            client.send(JSON.stringify({ answer: msgData.answer }));
+            client.send(JSON.stringify({ type: "answer", data: msgData.data }));
           }
         });
       }
 
       // Candidate 처리
-      if (msgData.candidate) {
+      if (msgData.type === "candidate") {
         roomClients.forEach((client) => {
           if (client !== socket) {
-            client.send(JSON.stringify({ candidate: msgData.candidate }));
+            client.send(
+              JSON.stringify({ type: "candidate", data: msgData.data })
+            );
           }
         });
       }
     }
 
-    console.log("message socket.room :::::::::::::::: ", socket.room);
+    // console.log("message socket.room :::::::::::::::: ", socket.room);
   });
 
   // 클라이언트 연결 종료 시
@@ -76,7 +83,7 @@ WSS.on("connection", (socket) => {
     if (rooms[socket.room].length === 0) {
       delete rooms[socket.room]; // 방이 비어 있으면 삭제
     }
-    console.log("close socket.room :::::::::::::::: ", socket.room);
+    // console.log("close socket.room :::::::::::::::: ", socket.room);
   });
 });
 
