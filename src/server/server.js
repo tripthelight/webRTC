@@ -61,7 +61,7 @@ WSS.on("connection", (socket) => {
         socket.send(
           JSON.stringify({
             type: "entryOrder",
-            length: roomClients.length,
+            userLength: roomClients.length,
             room: socket.room,
           })
         );
@@ -69,7 +69,7 @@ WSS.on("connection", (socket) => {
         const roomClients = ROOMS[recevedRoom];
 
         if (roomClients) {
-          // 내가 원래있던 방에 상대방이 있으면
+          // 내가 원래있던 방에 WebSocket이 있으면
 
           ROOMS[recevedRoom].push(socket);
           socket.room = recevedRoom;
@@ -77,38 +77,39 @@ WSS.on("connection", (socket) => {
           socket.send(
             JSON.stringify({
               type: "entryOrder",
-              length: roomClients.length,
+              userLength: roomClients.length,
               room: recevedRoom,
             })
           );
         } else {
-          // 내가 원래있던 방에 상대방이 없으면
-          let roomFound = false;
-          for (const [room, clients] of Object.entries(ROOMS)) {
-            if (clients.length < 2) {
-              ROOMS[room].push(socket);
-              socket.room = room;
-              roomFound = true;
-              break;
-            }
-          }
-
-          // 만약 모든 방에 WebSocket이 2개라면 새로운 방을 만들고 내 WebSocket을 추가
-          if (!roomFound) {
+          // 내가 원래있던 방에 WebSocket이 없으면
+          //
+          // 1) 내가 처음 들어왔는데, 상대방이 없는 상태에서 새로고침 -  yourName 없음
+          // 2) 내가 게임중에 상대방이 나간 상태에서 내가 새로고침 - yourName 있음
+          const yourName = msgData.yourName;
+          if (yourName === "") {
+            // 내가 처음 들어왔는데, 상대방이 없는 상태에서 새로고침
             const newRoomName = `room-${uuidv4()}`;
             ROOMS[newRoomName] = [socket];
             socket.room = newRoomName;
+
+            const roomClients = ROOMS[socket.room];
+
+            socket.send(
+              JSON.stringify({
+                type: "entryOrder",
+                userLength: roomClients.length,
+                room: socket.room,
+              })
+            );
+          } else {
+            // 내가 게임중에 상대방이 나간 상태에서 내가 새로고침
+            socket.send(
+              JSON.stringify({
+                type: "otherLeaves",
+              })
+            );
           }
-
-          const roomClients = ROOMS[socket.room];
-
-          socket.send(
-            JSON.stringify({
-              type: "entryOrder",
-              length: roomClients.length,
-              room: socket.room,
-            })
-          );
         }
       }
       // console.log("init ROOMS ::::: ", ROOMS);

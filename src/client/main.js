@@ -1,5 +1,6 @@
 // WebSocket 연결 설정
-const signalingSocket = new WebSocket("ws://localhost:4000");
+let signalingSocket;
+signalingSocket = new WebSocket("ws://localhost:4000");
 const servers = {
   iceServers: [
     {
@@ -14,7 +15,6 @@ const servers = {
 
 let peerConnection;
 let dataChannel;
-const room = () => window.sessionStorage.getItem("room");
 
 function initConnect() {
   return new Promise((resolve) => {
@@ -78,7 +78,6 @@ function initConnect() {
       signalingSocket.send(
         JSON.stringify({
           type: "candidate",
-          room: room(),
           data: JSON.stringify({ candidate }),
         })
       );
@@ -118,7 +117,6 @@ async function createOffer() {
   signalingSocket.send(
     JSON.stringify({
       type: "offer",
-      room: room(),
       data: JSON.stringify({ offer }),
     })
   );
@@ -146,14 +144,21 @@ signalingSocket.onopen = () => {
   // JSON.stringify({ type: "entryOrder" });
 
   const roomName = window.sessionStorage.getItem("roomName");
+  const yourName = window.sessionStorage.getItem("yourName");
   if (roomName) {
     // 이전에 입장한 room이 있음
     signalingSocket.send(
-      JSON.stringify({ type: "entryOrder", room: roomName })
+      JSON.stringify({
+        type: "entryOrder",
+        room: roomName,
+        yourName: yourName ?? "",
+      })
     );
   } else {
     // 새로 입장
-    signalingSocket.send(JSON.stringify({ type: "entryOrder", room: "" }));
+    signalingSocket.send(
+      JSON.stringify({ type: "entryOrder", room: "", yourName: "" })
+    );
   }
 };
 
@@ -162,12 +167,30 @@ signalingSocket.onmessage = async (message) => {
   const msgData = JSON.parse(message.data);
 
   if (msgData.type === "entryOrder") {
-    // // 내가 입장한 rooom name을 localStorage에 저장
+    // 내가 입장한 rooom name을 localStorage에 저장
     if (!window.sessionStorage.getItem("roomName")) {
       window.sessionStorage.setItem("roomName", msgData.room);
+    } else {
+      if (!window.sessionStorage.getItem("yourName")) {
+        window.sessionStorage.setItem("roomName", msgData.room);
+      }
     }
-    if (msgData.length === 2) {
+    console.log("msgData.userLengt :::: ", msgData.userLengt);
+
+    if (msgData.userLength === 2) {
       await createOffer(); // 두번째 접속한 사람만 offer를 보내야함
+    }
+  }
+
+  if (msgData.type === "otherLeaves") {
+    console.log("상대방이 방을 나감");
+    if (peerConnection) {
+      peerConnection.close();
+      peerConnection = null; // 연결 객체 제거
+    }
+    if (signalingSocket) {
+      signalingSocket.close(); // WebSocket 연결 닫기
+      signalingSocket = null; // 소켓 객체 제거
     }
   }
 
@@ -183,7 +206,6 @@ signalingSocket.onmessage = async (message) => {
     signalingSocket.send(
       JSON.stringify({
         type: "answer",
-        room: room(),
         data: JSON.stringify({ answer }),
       })
     );
