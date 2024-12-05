@@ -1,47 +1,119 @@
 import { WebSocketServer } from "ws";
+import Redis from "ioredis";
 import { v4 as uuidv4 } from "uuid";
 
 // WebSocket 서버 생성
 const WSS = new WebSocketServer({ port: 4000 });
+const redis = new Redis();
 
 // 각 Room을 관리하는 객체
-const rooms = {};
+const ROOMS = {};
 
 // 연결된 클라이언트 처리
 WSS.on("connection", (socket) => {
+  /*
   let assignedRoom;
 
   // 방 할당 로직
-  for (const [room, clients] of Object.entries(rooms)) {
+  for (const [room, clients] of Object.entries(ROOMS)) {
     if (clients.length < 2) {
       assignedRoom = room;
-      rooms[room].push(socket);
+      ROOMS[room].push(socket);
       break;
     }
   }
 
   if (!assignedRoom) {
     assignedRoom = `room-${uuidv4()}`;
-    rooms[assignedRoom] = [socket];
+    ROOMS[assignedRoom] = [socket];
   }
 
   socket.room = assignedRoom;
+  */
 
   socket.on("message", (message) => {
     const msgData = JSON.parse(message);
-    const sendRoom = msgData.room;
-    // const roomClients = sendRoom ? rooms[sendRoom] : rooms[socket.room];
-    const roomClients = rooms[socket.room];
+    // const roomClients = ROOMS[socket.room];
 
-    if (msgData.type === "userLength") {
-      socket.send(
-        JSON.stringify({
-          type: "userLength",
-          length: roomClients.length,
-          room: socket.room,
-        })
-      );
+    if (msgData.type === "entryOrder") {
+      const recevedRoom = msgData.room;
+
+      if (recevedRoom === "") {
+        let roomFound = false;
+        for (const [room, clients] of Object.entries(ROOMS)) {
+          if (clients.length < 2) {
+            ROOMS[room].push(socket);
+            socket.room = room;
+            roomFound = true;
+            break;
+          }
+        }
+
+        // 만약 모든 방에 WebSocket이 2개라면 새로운 방을 만들고 내 WebSocket을 추가
+        if (!roomFound) {
+          const newRoomName = `room-${uuidv4()}`;
+          ROOMS[newRoomName] = [socket];
+          socket.room = newRoomName;
+        }
+
+        const roomClients = ROOMS[socket.room];
+
+        socket.send(
+          JSON.stringify({
+            type: "entryOrder",
+            length: roomClients.length,
+            room: socket.room,
+          })
+        );
+      } else {
+        const roomClients = ROOMS[recevedRoom];
+
+        if (roomClients) {
+          // 내가 원래있던 방에 상대방이 있으면
+
+          ROOMS[recevedRoom].push(socket);
+          socket.room = recevedRoom;
+
+          socket.send(
+            JSON.stringify({
+              type: "entryOrder",
+              length: roomClients.length,
+              room: recevedRoom,
+            })
+          );
+        } else {
+          // 내가 원래있던 방에 상대방이 없으면
+          let roomFound = false;
+          for (const [room, clients] of Object.entries(ROOMS)) {
+            if (clients.length < 2) {
+              ROOMS[room].push(socket);
+              socket.room = room;
+              roomFound = true;
+              break;
+            }
+          }
+
+          // 만약 모든 방에 WebSocket이 2개라면 새로운 방을 만들고 내 WebSocket을 추가
+          if (!roomFound) {
+            const newRoomName = `room-${uuidv4()}`;
+            ROOMS[newRoomName] = [socket];
+            socket.room = newRoomName;
+          }
+
+          const roomClients = ROOMS[socket.room];
+
+          socket.send(
+            JSON.stringify({
+              type: "entryOrder",
+              length: roomClients.length,
+              room: socket.room,
+            })
+          );
+        }
+      }
+      // console.log("init ROOMS ::::: ", ROOMS);
     } else {
+      const roomClients = ROOMS[socket.room];
       // Offer 처리
       if (msgData.type === "offer") {
         roomClients.forEach((client) => {
@@ -71,19 +143,20 @@ WSS.on("connection", (socket) => {
         });
       }
     }
-
-    // console.log("message socket.room :::::::::::::::: ", socket.room);
   });
 
   // 클라이언트 연결 종료 시
   socket.on("close", () => {
-    rooms[socket.room] = rooms[socket.room].filter(
-      (client) => client !== socket
-    );
-    if (rooms[socket.room].length === 0) {
-      delete rooms[socket.room]; // 방이 비어 있으면 삭제
+    if (ROOMS[socket.room]) {
+      ROOMS[socket.room] = ROOMS[socket.room].filter(
+        (client) => client !== socket
+      );
+      if (ROOMS[socket.room].length === 0) {
+        delete ROOMS[socket.room]; // 방이 비어 있으면 삭제
+      }
     }
-    // console.log("close socket.room :::::::::::::::: ", socket.room);
+
+    // console.log("close ROOMS ::::: ", ROOMS);
   });
 });
 

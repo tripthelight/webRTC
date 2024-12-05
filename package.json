@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "express": "^4.21.1",
+    "ioredis": "^5.4.1",
     "nodemon": "^3.1.7",
     "socket.io": "^4.8.1"
   },

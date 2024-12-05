@@ -23,10 +23,24 @@ function initConnect() {
 
     peerConnection.ondatachannel = (event) => {
       const onDataChannel = event.channel;
+      // 내 nickName을 상대방에게 전송
+
+      onDataChannel.send(
+        JSON.stringify({
+          type: "nickName",
+          data: window.localStorage.getItem("nickName"),
+        })
+      );
+
       const RTC_BTN = document.querySelector(".rtc-btn");
       if (onDataChannel && onDataChannel.readyState === "open") {
         RTC_BTN.onclick = () => {
-          onDataChannel.send("hello !!!!!!!!");
+          onDataChannel.send(
+            JSON.stringify({
+              type: "clickMessage",
+              data: "click !!!!!!!!!!!!!!!!!",
+            })
+          );
         };
       }
     };
@@ -36,7 +50,17 @@ function initConnect() {
     };
 
     dataChannel.onmessage = (event) => {
-      console.log("Received message: ", event.data);
+      // console.log("Received message: ", event.data);
+      const message = JSON.parse(event.data);
+      console.log("message : ", message);
+      if (message.type === "nickName") {
+        window.sessionStorage.setItem("yourName", message.data);
+        document.querySelector(".ur-nickname").innerText =
+          window.sessionStorage.getItem("yourName");
+      }
+      if (message.type === "clickMessage") {
+        console.log("click message : ", message.data);
+      }
     };
 
     dataChannel.onclose = () => {
@@ -102,21 +126,46 @@ async function createOffer() {
   console.log("offer 보냄");
 }
 
+// 공백이 없는 랜덤한 10글자의 알파벳
+const generateRandomString = () =>
+  Array.from({ length: 10 }, () =>
+    String.fromCharCode(97 + Math.floor(Math.random() * 26))
+  ).join("");
+
+const nickNameStr = () => {
+  if (!window.localStorage.getItem("nickName")) {
+    window.localStorage.setItem("nickName", generateRandomString());
+  }
+  return window.localStorage.getItem("nickName");
+};
+
 // signalingServer 연결이 열리면
 signalingSocket.onopen = () => {
-  signalingSocket.send(JSON.stringify({ type: "userLength" }));
+  document.querySelector(".my-nickname").innerText = nickNameStr();
+
+  // JSON.stringify({ type: "entryOrder" });
+
+  const roomName = window.sessionStorage.getItem("roomName");
+  if (roomName) {
+    // 이전에 입장한 room이 있음
+    signalingSocket.send(
+      JSON.stringify({ type: "entryOrder", room: roomName })
+    );
+  } else {
+    // 새로 입장
+    signalingSocket.send(JSON.stringify({ type: "entryOrder", room: "" }));
+  }
 };
 
 // signalingServer 응답
 signalingSocket.onmessage = async (message) => {
   const msgData = JSON.parse(message.data);
 
-  if (msgData.type === "userLength") {
-    // 내 room을 sessionStorage에 저장
-    if (!window.sessionStorage.getItem("room")) {
-      window.sessionStorage.setItem("room", msgData.room);
+  if (msgData.type === "entryOrder") {
+    // // 내가 입장한 rooom name을 localStorage에 저장
+    if (!window.sessionStorage.getItem("roomName")) {
+      window.sessionStorage.setItem("roomName", msgData.room);
     }
-
     if (msgData.length === 2) {
       await createOffer(); // 두번째 접속한 사람만 offer를 보내야함
     }
