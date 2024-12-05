@@ -9,31 +9,53 @@ const redis = new Redis();
 // 각 Room을 관리하는 객체
 const ROOMS = {};
 
+// ===============================================================
+// 사용자 WebSocket 추가
+async function addWebSocketToRoom(roomName, websocket) {
+  // WebSocket ID를 Set에 추가
+  await redis.sadd(`ROOMS:${roomName}`, websocket);
+}
+
+// 방의 WebSocket 세션들 가져오기
+async function getWebSocketsInRoom(roomName) {
+  return await redis.smembers(`ROOMS:${roomName}`); // 해당 방에 연결된 모든 WebSocket ID 반환
+}
+
+// WebSocket 세션 제거 (사용자가 나갈 때)
+async function removeWebSocketFromRoom(roomName, websocket) {
+  await redis.srem(`ROOMS:${roomName}`, websocket); // WebSocket ID를 Set에서 제거
+}
+
+// 방 삭제 (방에 WebSocket이 없을 경우)
+async function removeRoomIfEmpty(roomName) {
+  const sockets = await redis.smembers(`ROOMS:${roomName}`);
+  if (sockets.length === 0) {
+    await redis.del(`ROOMS:${roomName}`); // WebSocket이 없으면 방 삭제
+  }
+}
+
+// 테스트
+async function redisInit() {
+  // WebSocket을 고유한 ID로 추가
+  await addWebSocketToRoom("roomName-randomName1", "ws1");
+  await addWebSocketToRoom("roomName-randomName1", "ws2");
+
+  // 방에 연결된 WebSocket 세션들 확인
+  const sockets = await getWebSocketsInRoom("roomName-randomName1");
+  console.log("WebSockets in roomName-randomName1:", sockets); // ['ws1', 'ws2']
+
+  // WebSocket 세션 하나 제거 후 확인
+  // await removeWebSocketFromRoom("roomName-randomName1", "ws1");
+  // const socketsAfterRemoval = await getWebSocketsInRoom("roomName-randomName1");
+  // console.log("WebSockets after removal:", socketsAfterRemoval); // ['ws2']
+}
+// redisInit();
+// ===============================================================
+
 // 연결된 클라이언트 처리
-WSS.on("connection", (socket) => {
-  /*
-  let assignedRoom;
-
-  // 방 할당 로직
-  for (const [room, clients] of Object.entries(ROOMS)) {
-    if (clients.length < 2) {
-      assignedRoom = room;
-      ROOMS[room].push(socket);
-      break;
-    }
-  }
-
-  if (!assignedRoom) {
-    assignedRoom = `room-${uuidv4()}`;
-    ROOMS[assignedRoom] = [socket];
-  }
-
-  socket.room = assignedRoom;
-  */
-
-  socket.on("message", (message) => {
+WSS.on("connection", async (socket) => {
+  socket.on("message", async (message) => {
     const msgData = JSON.parse(message);
-    // const roomClients = ROOMS[socket.room];
 
     if (msgData.type === "entryOrder") {
       const recevedRoom = msgData.room;
@@ -53,10 +75,13 @@ WSS.on("connection", (socket) => {
         if (!roomFound) {
           const newRoomName = `room-${uuidv4()}`;
           ROOMS[newRoomName] = [socket];
+          await addWebSocketToRoom(newRoomName, socket);
           socket.room = newRoomName;
         }
 
         const roomClients = ROOMS[socket.room];
+        console.log("roomClients ::::::::::::::: ", roomClients);
+        const roomClientsRedis = await getWebSocketsInRoom(socket.room);
 
         socket.send(
           JSON.stringify({
@@ -112,7 +137,6 @@ WSS.on("connection", (socket) => {
           }
         }
       }
-      // console.log("init ROOMS ::::: ", ROOMS);
     } else {
       const roomClients = ROOMS[socket.room];
       // Offer 처리
@@ -156,8 +180,6 @@ WSS.on("connection", (socket) => {
         delete ROOMS[socket.room]; // 방이 비어 있으면 삭제
       }
     }
-
-    // console.log("close ROOMS ::::: ", ROOMS);
   });
 });
 
