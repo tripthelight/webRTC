@@ -25,7 +25,15 @@ function getRealWebSocket(socketId) {
   */
 }
 
+/**
+ * 상대방 WebSocket을 찾아서, msgData.type에 msgData.data를 전송
+ * @param {Object} msgData msgData.type: offer | answer | candidate
+ * @param {Object} socket
+ */
 async function offerAnserCandidateDataProcess(msgData, socket) {
+  const { type, data } = msgData;
+  if (!type || !data) return;
+
   // Redis에서 해당 room에 연결된 모든 클라이언트 정보 가져오기
   const roomClientsSockets = await redis.hgetall(socket.room);
 
@@ -38,9 +46,7 @@ async function offerAnserCandidateDataProcess(msgData, socket) {
     if (clientSocket.socketId !== socket.socketId) {
       const realSocket = getRealWebSocket(clientSocket.socketId); // 메모리나 다른 방식으로 WebSocket 인스턴스 찾기
       if (realSocket) {
-        realSocket.send(
-          JSON.stringify({ type: msgData.type, data: msgData.data })
-        );
+        realSocket.send(JSON.stringify({ type, data }));
       }
     }
   }
