@@ -1,6 +1,6 @@
-import { WebSocketServer } from "ws";
 import Redis from "ioredis";
 import { v4 as uuidv4 } from "uuid";
+import { WebSocketServer } from "ws";
 
 // WebSocket 서버 생성
 const WSS = new WebSocketServer({ port: 4000 });
@@ -10,9 +10,7 @@ const redis = new Redis();
 function getRealWebSocket(socketId) {
   // 예시: socketId를 사용하여 WebSocket 인스턴스를 찾는 방법 구현
   // 실제로는 WebSocket 서버의 상태나 메모리에서 WebSocket을 추적해야 함
-  const client = Array.from(WSS.clients).find(
-    (client) => client.socketId === socketId
-  );
+  const client = Array.from(WSS.clients).find((client) => client.socketId === socketId);
   return client || null;
 
   /*
@@ -32,23 +30,29 @@ function getRealWebSocket(socketId) {
  */
 async function offerAnserCandidateDataProcess(msgData, socket) {
   const { type, data } = msgData;
-  if (!type || !data) return;
+  if (type && data) {
+    // Redis에서 해당 room에 연결된 모든 클라이언트 정보 가져오기
+    const roomClientsSockets = await redis.hgetall(socket.room);
 
-  // Redis에서 해당 room에 연결된 모든 클라이언트 정보 가져오기
-  const roomClientsSockets = await redis.hgetall(socket.room);
+    for (const key in roomClientsSockets) {
+      const clientSocketId = JSON.parse(roomClientsSockets[key]).socketId;
+      const clientSocketData = await redis.hget(socket.room, clientSocketId);
+      const clientSocket = JSON.parse(clientSocketData); // WebSocket 메타정보에서 데이터를 가져옴
 
-  for (const key in roomClientsSockets) {
-    const clientSocketId = JSON.parse(roomClientsSockets[key]).socketId;
-    const clientSocketData = await redis.hget(socket.room, clientSocketId);
-    const clientSocket = JSON.parse(clientSocketData); // WebSocket 메타정보에서 데이터를 가져옴
-
-    // 나 자신을 제외한 다른 클라이언트에게 메시지 보내기
-    if (clientSocket.socketId !== socket.socketId) {
-      const realSocket = getRealWebSocket(clientSocket.socketId); // 메모리나 다른 방식으로 WebSocket 인스턴스 찾기
-      if (realSocket) {
-        realSocket.send(JSON.stringify({ type, data }));
+      // 나 자신을 제외한 다른 클라이언트에게 메시지 보내기
+      if (clientSocket.socketId !== socket.socketId) {
+        const realSocket = getRealWebSocket(clientSocket.socketId); // 메모리나 다른 방식으로 WebSocket 인스턴스 찾기
+        if (realSocket) {
+          realSocket.send(JSON.stringify({ type, data }));
+          break;
+        } else {
+          socket.send(JSON.stringify({ type: "otherLeaves" }));
+          break;
+        }
       }
     }
+  } else {
+    socket.send(JSON.stringify({ type: "otherLeaves" }));
   }
 }
 
@@ -74,11 +78,7 @@ WSS.on("connection", async (socket) => {
           const sockets = await redis.hgetall(room); // 해당 방에 연결된 클라이언트 정보 가져오기
           if (Object.keys(sockets).length < 2) {
             socket.room = room; // 방에 1명이 있다면 그 방으로 입장
-            await redis.hset(
-              room,
-              socket.socketId,
-              JSON.stringify({ socketId: socket.socketId, socket })
-            );
+            await redis.hset(room, socket.socketId, JSON.stringify({ socketId: socket.socketId, socket }));
             roomFound = true;
             break; // 방을 찾으면 루프 종료
           }
@@ -89,11 +89,7 @@ WSS.on("connection", async (socket) => {
           const newRoomName = `room-${uuidv4()}`;
           socket.room = newRoomName;
 
-          await redis.hset(
-            newRoomName,
-            socket.socketId,
-            JSON.stringify({ socketId: socket.socketId, socket })
-          );
+          await redis.hset(newRoomName, socket.socketId, JSON.stringify({ socketId: socket.socketId, socket }));
         }
 
         const roomClientsSockets = await redis.hgetall(socket.room);
@@ -121,11 +117,7 @@ WSS.on("connection", async (socket) => {
           socket.room = recevedRoom;
           const socketId = `socketId-${uuidv4()}`;
           socket.socketId = socketId;
-          await redis.hset(
-            recevedRoom,
-            socket.socketId,
-            JSON.stringify({ socketId: socket.socketId, socket })
-          );
+          await redis.hset(recevedRoom, socket.socketId, JSON.stringify({ socketId: socket.socketId, socket }));
 
           const roomClientsSockets = await redis.hgetall(socket.room);
 
@@ -147,11 +139,7 @@ WSS.on("connection", async (socket) => {
             const newRoomName = `room-${uuidv4()}`;
             socket.room = newRoomName;
 
-            await redis.hset(
-              newRoomName,
-              socket.socketId,
-              JSON.stringify({ socketId: socket.socketId, socket })
-            );
+            await redis.hset(newRoomName, socket.socketId, JSON.stringify({ socketId: socket.socketId, socket }));
 
             const roomClientsSockets = await redis.hgetall(socket.room);
 
@@ -164,11 +152,7 @@ WSS.on("connection", async (socket) => {
             );
           } else {
             // 내가 게임중에 상대방이 나간 상태에서 내가 새로고침
-            socket.send(
-              JSON.stringify({
-                type: "otherLeaves",
-              })
-            );
+            socket.send(JSON.stringify({ type: "otherLeaves" }));
           }
         }
       }

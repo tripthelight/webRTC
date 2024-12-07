@@ -4,11 +4,7 @@ signalingSocket = new WebSocket("ws://localhost:4000");
 const servers = {
   iceServers: [
     {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun2.l.google.com:19302",
-      ],
+      urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
     },
   ],
 };
@@ -50,13 +46,10 @@ function initConnect() {
     };
 
     dataChannel.onmessage = (event) => {
-      // console.log("Received message: ", event.data);
       const message = JSON.parse(event.data);
-      console.log("message : ", message);
       if (message.type === "nickName") {
         window.sessionStorage.setItem("yourName", message.data);
-        document.querySelector(".ur-nickname").innerText =
-          window.sessionStorage.getItem("yourName");
+        document.querySelector(".ur-nickname").innerText = window.sessionStorage.getItem("yourName");
       }
       if (message.type === "clickMessage") {
         console.log("click message : ", message.data);
@@ -126,9 +119,7 @@ async function createOffer() {
 
 // 공백이 없는 랜덤한 10글자의 알파벳
 const generateRandomString = () =>
-  Array.from({ length: 10 }, () =>
-    String.fromCharCode(97 + Math.floor(Math.random() * 26))
-  ).join("");
+  Array.from({ length: 10 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("");
 
 const nickNameStr = () => {
   if (!window.localStorage.getItem("nickName")) {
@@ -156,9 +147,7 @@ signalingSocket.onopen = () => {
     );
   } else {
     // 새로 입장
-    signalingSocket.send(
-      JSON.stringify({ type: "entryOrder", room: "", yourName: "" })
-    );
+    signalingSocket.send(JSON.stringify({ type: "entryOrder", room: "", yourName: "" }));
   }
 };
 
@@ -175,8 +164,6 @@ signalingSocket.onmessage = async (message) => {
         window.sessionStorage.setItem("roomName", msgData.room);
       }
     }
-    console.log("msgData.userLengt :::: ", msgData.userLengt);
-
     if (msgData.userLength === 2) {
       await createOffer(); // 두번째 접속한 사람만 offer를 보내야함
     }
@@ -216,9 +203,7 @@ signalingSocket.onmessage = async (message) => {
   if (msgData.type === "answer") {
     console.log("answer 받음 ::: ", JSON.parse(msgData.data).answer);
     const answer = JSON.parse(msgData.data).answer;
-    await peerConnection.setRemoteDescription(
-      new RTCSessionDescription(answer)
-    );
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
   }
 
   if (msgData.type === "candidate") {
