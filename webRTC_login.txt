@@ -17,3 +17,10 @@
 또는 peer A 새로고침 -> 즉시 peer B 새로고침 -> 즉시 peer A 새로고침 시에도 새로고침을 당한 상대 peer의 진행을 rollback 시키거나, 진행 중이던 작업을 무시시키고, 깨끗한 상태에서 peer B의 offer를 받아야 한다.
 
 브라우저에 접속하자 마자, signalingServer 연결시키고, offer, anser, candidate를 주고 받고, 연결 완료 후 메시지 전송까지 할 수 있는 전체 코드를 작성해라.
+
+//////////////////////////////////////////////
+
+Perfect Negotiation 패턴(rollback/ignore) 으로 글레어(offer 충돌)를 처리하고,
+방에 먼저 들어온 쪽=impolite(false) / 나중에 들어온 쪽=polite(true) 를 서버가 정해주는 방식이 있다.
+내가 이 원리를 모른다.
+한 단계, 한 단계 천천히 코드를 아주 작게 나눠서, 이해하기 쉽게 아주 자세히 설명해라.
