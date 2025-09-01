@@ -1,235 +1,265 @@
-import { NegotiationManager } from '../../common/negotiationManager.js';
-import { v4 as uuidV4 } from 'uuid';
+const logEl = document.getElementById('log');
+const roomInput = document.getElementById('room');
+const saveBtn = document.getElementById('saveRoom');
+const msgInput = document.getElementById('msg');
+const sendBtn = document.getElementById('send');
+const disconnectBtn = document.getElementById('disconnect');
 
-// ---- 설정 (필요 시 수정) -------------------------------------------------
-const SIGNALING_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
-const RTC_CONFIG = {
+const log = (...a) => {
+  const s = a.map(v => typeof v === 'string' ? v : JSON.stringify(v)).join(' ');
+  console.log('[LOG]', ...a);
+  logEl.textContent += s + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+};
+
+// --- roomName: sessionStorage 우선 ---
+const roomName = sessionStorage.getItem('roomName') || '';
+if (roomName) roomInput.value = roomName;
+saveBtn.onclick = () => {
+  const v = roomInput.value.trim();
+  if (v) {
+    sessionStorage.setItem('roomName', v);
+    log('roomName 저장:', v);
+  }
+};
+
+// --- WS 연결 ---
+const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+const wsUrl = `${wsProtocol}://${location.host}`;
+const ws = new WebSocket(wsUrl);
+
+let me = null;          // 나의 peerId
+let peer = null;        // 상대 peerId
+let polite = false;     // 서버가 정해줌
+let pc = null;
+let dc = null;          // datachannel
+let makingOffer = false;
+let ignoreOffer = false;
+let isSettingRemoteAnswerPending = false;
+
+// ICE 서버(예시)
+const rtcConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    // { urls: 'turn:your.turn.server', username: 'user', credential: 'pass' },
-  ],
+  ]
 };
 
-// roomName / clientId 초기화 (세션 유지)
-const roomName = sessionStorage.getItem('roomName') || 'demo-room';
-sessionStorage.setItem('roomName', roomName);
-const myId = sessionStorage.getItem('clientId') || uuidV4();
-sessionStorage.setItem('clientId', myId);
-
-// ---- attemptId 유틸 ----
-function genAttemptId() { return Date.now(); }
-
-// WebSocket 연결
-const ws = new WebSocket(SIGNALING_URL);
-function send(obj) { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); }
-
-// Peer 관리
-let peerId = null;            // 상대 ID
-let IS_POLITE = false;        // Perfect Negotiation 역할
-let I_AM_INITIATOR = false;   // 누가 먼저 offer 낼지 결정(충돌 방지용)
-
-// Negotiation Manager 생성
-const neg = new NegotiationManager({
-  createPeerConnection: () => new RTCPeerConnection(RTC_CONFIG),
-  onLog: (...args) => console.log(...args),
-});
-
-// 현재 attempt pc/dc 헬퍼
-function cur() { return neg.current || {}; }
-
-// 자신의 최신 attemptId로 시그널 보내기
-function sendSignal(payload) {
-  const attemptId = cur().attemptId;
-  send({ type: 'signal', roomName, from: myId, to: peerId, attemptId, ...payload });
-}
-
-// 피어가 정해지면 역할 고정 (ID 사전순 기준 예시)
-function decideRoles() {
-  if (!peerId) return;
-  IS_POLITE = myId > peerId;             // 사전순 큰 쪽을 Polite로
-  I_AM_INITIATOR = myId < peerId;        // 사전순 작은 쪽이 최초 Offer 주도
-  console.log('[ROLE] polite=', IS_POLITE, 'initiator=', I_AM_INITIATOR);
-}
-
-// 새 attempt 시작(필수 이벤트 바인딩)
-function startAttempt(attemptId = genAttemptId(), asCaller = false) {
-  const { pc, controller } = neg.startNewAttempt(attemptId);
-  const signal = controller.signal;
-
-  // 로컬 미디어/데이터 채널(데모: 데이터채널)
-  if (asCaller) {
-    const dc = pc.createDataChannel('chat');
-    neg.attachDataChannel(dc);
-    // open시 자동 테스트 메시지
-    dc.onopen = () => {
-      console.log('[DC] open');
-      try { dc.send(`hello-from:${myId} attempt:${attemptId}`); } catch {}
-    };
-  }
-
-  pc.ondatachannel = (e) => {
-    const ch = e.channel;
-    neg.attachDataChannel(ch);
-    ch.onopen = () => {
-      console.log('[DC] (rx) open');
-      try { ch.send(`hello-from:${myId} attempt:${attemptId}`); } catch {}
-    };
-  };
-
-  // ICE
-  pc.onicecandidate = (e) => {
-    if (!e.candidate) return;
-    if (!neg.current || neg.current.attemptId !== attemptId) return; // 최신 시도만 전송
-    const cand = (typeof e.candidate.toJSON === 'function') ? e.candidate.toJSON() : {
-      candidate: e.candidate.candidate,
-      sdpMid: e.candidate.sdpMid,
-      sdpMLineIndex: e.candidate.sdpMLineIndex,
-      usernameFragment: e.candidate.usernameFragment,
-    };
-    sendSignal({ action: 'candidate', candidate: cand });
-  };
-
-  return pc;
-}
-
-// ---- 송신: Offer 생성 ----
-async function makeOffer() {
-  if (!peerId) return;
-  const attemptId = genAttemptId();
-  startAttempt(attemptId, true);
-  const { pc, controller } = cur();
-  const signal = controller.signal;
-
-  const offer = await pc.createOffer();
-  if (signal.aborted) return;
-  await pc.setLocalDescription(offer);
-  if (signal.aborted) return;
-
-  sendSignal({ action: 'offer', sdp: offer.sdp });
-}
-
-// ---- 수신: Offer 처리 ----
-async function onOffer(msg) {
-  const { attemptId, sdp } = msg;
-
-  if (!neg.ensureLatest(attemptId)) return; // 최신성 보장
-  const { pc, controller } = cur();
-  const signal = controller.signal;
-
-  // Perfect Negotiation: Polite는 로컬 오퍼 중이면 롤백
-  if (IS_POLITE && pc.signalingState === 'have-local-offer') {
-    try { await pc.setLocalDescription({ type: 'rollback' }); } catch {}
-  }
-  if (signal.aborted) return;
-
-  await pc.setRemoteDescription({ type: 'offer', sdp });
-  if (signal.aborted) return;
-
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  if (signal.aborted) return;
-
-  sendSignal({ action: 'answer', sdp: answer.sdp });
-  await neg.flushCandidates(attemptId, pc);
-}
-
-// ---- 수신: Answer 처리 ----
-async function onAnswer(msg) {
-  const { attemptId, sdp } = msg;
-  if (!neg.ensureLatest(attemptId)) return;
-  const { pc, controller } = cur();
-  const signal = controller.signal;
-
-  await pc.setRemoteDescription({ type: 'answer', sdp });
-  if (signal.aborted) return;
-
-  await neg.flushCandidates(attemptId, pc);
-}
-
-// ---- 수신: Candidate 처리 ----
-async function onCandidate(msg) {
-  const { attemptId, candidate } = msg;
-  if (neg.isStaleAttempt(attemptId)) return; // 구 attempt는 폐기
-
-  const rtcCandObj = candidate; // plain object
-
-  if (!neg.current || neg.current.attemptId !== attemptId) {
-    neg.bufferCandidate(attemptId, rtcCandObj);
+// 방 참가 시도(페이지 로드시 자동)
+ws.addEventListener('open', () => {
+  const rn = sessionStorage.getItem('roomName') || roomInput.value.trim();
+  if (!rn) {
+    log('⚠️ roomName이 비어 있습니다. 입력 후 [room 저장]을 누르세요.');
     return;
   }
-  const { pc } = cur();
-  if (!pc.remoteDescription) {
-    neg.bufferCandidate(attemptId, rtcCandObj);
-  } else {
-    try {
-      const ice = (typeof RTCIceCandidate !== 'undefined') ? new RTCIceCandidate(rtcCandObj) : rtcCandObj;
-      await pc.addIceCandidate(ice);
-    } catch (err) { console.warn('[ICE] addIceCandidate error', err); }
-  }
-}
+  join(rn);
+});
 
-// ---- WebSocket 수신 핸들러 ----
-ws.onopen = () => {
-  console.log('[WS] open');
-  send({ type: 'join', roomName, clientId: myId });
-};
+ws.addEventListener('message', async (ev) => {
+  const msg = JSON.parse(ev.data);
 
-ws.onmessage = (ev) => {
-  let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-  if (msg.type === 'peer-list') {
-    const others = msg.peers.filter((p) => p !== myId);
-    if (others.length) {
-      const nextPeer = others[0]; // 2인 방 가정
-      if (peerId !== nextPeer) {
-        peerId = nextPeer;
-        decideRoles();
-        if (I_AM_INITIATOR) setTimeout(() => makeOffer(), 50); // 안정용 소지연
-      }
+  if (msg.type === 'joined') {
+    me = msg.you;
+    polite = !!msg.polite;
+    peer = msg.peer; // 있을 수도, 없을 수도
+    log('🟢 joined:', { me, polite, peer, room: msg.room });
+
+    // RTCPeerConnection 준비
+    await ensurePC();
+
+    // impolite 쪽만 DataChannel 생성 → 글레어 줄임
+    if (!polite && !dc) {
+      dc = pc.createDataChannel('chat');
+      setupDataChannel(dc);
     }
     return;
   }
 
-  if (msg.type === 'signal' && msg.to === myId) {
-    const { action } = msg;
-    if (action === 'offer') return onOffer(msg);
-    if (action === 'answer') return onAnswer(msg);
-    if (action === 'candidate') return onCandidate(msg);
+  if (msg.type === 'peer-joined') {
+    peer = msg.peer;
+    log('👥 peer-joined:', peer);
+    // 상대가 들어오면 negotiationneeded가 자연히 발생(impolite가 dc를 만들었기 때문)
+    return;
+  }
+
+  if (msg.type === 'peer-left') {
+    log('👋 peer-left:', msg.peer);
+    peer = null;
+    // 연결 유지중이면 닫고 새 연결 준비
+    closePC();
+    await ensurePC();
+    return;
+  }
+
+  if (msg.type === 'kicked') {
+    log('⚠️ 방이 가득차 교체되었습니다. 새로고침하세요.');
+    return;
+  }
+
+  if (msg.type === 'signal' && msg.signal && msg.from) {
+    // 시그널 수신
+    await handleSignal(msg.from, msg.signal);
+    return;
+  }
+});
+
+// 떠날 때 방에 알림(가능하면)
+window.addEventListener('unload', () => {
+  try {
+    const body = JSON.stringify({ type: 'leave' });
+    navigator.sendBeacon(wsUrl.replace(/^ws/, 'http'), body);
+  } catch {}
+});
+
+// --- 기본 유틸 ---
+function join(room) {
+  ws.send(JSON.stringify({ type: 'join', room }));
+}
+
+function sendSignal(to, signal) {
+  if (!to) return;
+  ws.send(JSON.stringify({ type: 'signal', to, signal }));
+}
+
+async function ensurePC() {
+  if (pc) return pc;
+
+  pc = new RTCPeerConnection(rtcConfig);
+
+  // Perfect Negotiation flags
+  makingOffer = false;
+  ignoreOffer = false;
+  isSettingRemoteAnswerPending = false;
+
+  pc.addEventListener('connectionstatechange', () => {
+    log('pc.connectionState =', pc.connectionState);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+      // 문제가 생기면 정리
+      // (상황에 따라 재시도/재협상 로직을 붙일 수 있음)
+    }
+  });
+
+  pc.addEventListener('icecandidate', (e) => {
+    if (e.candidate && peer) {
+      sendSignal(peer, { type: 'candidate', candidate: e.candidate });
+    }
+  });
+
+  // negotiationneeded: (impolite가 dc를 만들면 자동 발생)
+  pc.addEventListener('negotiationneeded', async () => {
+    try {
+      makingOffer = true;
+      await pc.setLocalDescription();
+      if (peer) sendSignal(peer, { type: 'description', description: pc.localDescription });
+    } catch (err) {
+      log('negotiationneeded error', err);
+    } finally {
+      makingOffer = false;
+    }
+  });
+
+  // 상대가 만든 데이터채널
+  pc.addEventListener('datachannel', (e) => {
+    dc = e.channel;
+    setupDataChannel(dc);
+  });
+
+  return pc;
+}
+
+function setupDataChannel(ch) {
+  ch.addEventListener('open', () => {
+    log('💬 DataChannel OPEN');
+    // 연결 성사 즉시, 예시 메시지 전송
+    ch.send(`hello from ${me} (${polite ? 'polite' : 'impolite'})`);
+  });
+  ch.addEventListener('message', (e) => {
+    log('📩 recv:', e.data);
+  });
+  ch.addEventListener('close', () => {
+    log('💤 DataChannel CLOSED');
+  });
+}
+
+async function handleSignal(from, signal) {
+  if (!pc) await ensurePC();
+
+  // Description 처리 (Perfect Negotiation)
+  if (signal.type === 'description') {
+    const desc = signal.description;
+    const readyForOffer =
+      !makingOffer &&
+      (pc.signalingState === 'stable' || isSettingRemoteAnswerPending);
+    const offerCollision =
+      desc.type === 'offer' && !readyForOffer;
+
+    ignoreOffer = !polite && offerCollision;
+    if (ignoreOffer) {
+      log('⚠️ glare: impolite → remote offer 무시');
+      return;
+    }
+
+    try {
+      if (offerCollision) {
+        // polite 쪽: 진행 중이던 로컬 변경 롤백
+        log('↩️ glare: polite → rollback');
+        await pc.setLocalDescription({ type: 'rollback' });
+      }
+      isSettingRemoteAnswerPending = desc.type === 'answer';
+      await pc.setRemoteDescription(desc);
+      isSettingRemoteAnswerPending = false;
+
+      if (desc.type === 'offer') {
+        await pc.setLocalDescription(await pc.createAnswer());
+        sendSignal(from, { type: 'description', description: pc.localDescription });
+      }
+    } catch (err) {
+      log('setRemote/Answer error', err);
+    }
+    return;
+  }
+
+  // ICE candidate
+  if (signal.type === 'candidate') {
+    try {
+      await pc.addIceCandidate(signal.candidate);
+    } catch (err) {
+      if (!ignoreOffer) {
+        log('addIceCandidate error', err);
+      } else {
+        log('addIceCandidate ignored due to glare');
+      }
+    }
+    return;
+  }
+}
+
+// 전송 버튼
+sendBtn.onclick = () => {
+  if (dc && dc.readyState === 'open') {
+    const text = msgInput.value.trim();
+    if (text) {
+      dc.send(text);
+      log('📤 send:', text);
+      msgInput.value = '';
+    }
+  } else {
+    log('⚠️ DataChannel이 아직 열리지 않았습니다.');
   }
 };
 
-// ---- (선택) 콘솔에서 손쉽게 테스트 메시지 보내기 ----
-window._rtc = {
-  send: (text) => neg.send(text),
-  onMessage: (fn) => neg.onMessage(fn),
-  status: () => {
-    const st = {
-      attemptId: cur().attemptId,
-      hasCurrent: !!neg.current,
-      currentDC: neg.current?.dc?.readyState,
-      openDC: neg.openDC?.readyState,
-      signalingState: neg.current?.pc?.signalingState,
-      iceState: neg.current?.pc?.iceConnectionState,
-      connState: neg.current?.pc?.connectionState,
-      peerId,
-      IS_POLITE,
-      I_AM_INITIATOR,
-    };
-    console.table(st); return st;
-  },
-  makeOffer,
-  neg,
-  get peerId() { return peerId; },
-  get IS_POLITE() { return IS_POLITE; }
+// 수동 종료
+disconnectBtn.onclick = () => {
+  closePC();
+  if (ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ type: 'leave' })); } catch {}
+  }
 };
 
-// 예)
-// 1) 연결 상태 확인:  _rtc.status()
-// 2) 메세지 전송:    _rtc.send('hello')
-// 3) 수신 훅 등록:   _rtc.onMessage((msg) => console.log('REMOTE>', msg))
-
-function main() {
-  window.addEventListener('click', () => {
-    console.log('111');
-  })
-};
-main();
+function closePC() {
+  if (dc) { try { dc.close(); } catch {} dc = null; }
+  if (pc) {
+    try { pc.ontrack = pc.onicecandidate = pc.onnegotiationneeded = null; } catch {}
+    try { pc.close(); } catch {}
+    pc = null;
+  }
+}

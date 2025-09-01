@@ -1,0 +1,19 @@
+1. peer A와 peer B는 브라우저에서 webRTC로 연결되어 있음.
+2. peer A가 브라우저에서 새로고침.
+3. peer A의 dabaChannel과 peerConnection 정보가 사라짐.
+4. peer A의 브라우저 sessionStorage에 있는 roomName을 webSocket signaling server에 보냄.
+5. signaling server는 메모리에 저장된 roomName에서 peer A가 보낸 roomName에 있는 peer B와 연결.
+6. 연결 과정에서 offer, answer, candidate 통신 발생.
+7. peer B는 peer A의 offer를 받고, answer를 보냄, 동시에 candidate 교환.
+8. 교환이 아직 끝나지 않았는데, 갑자기 peer B가 브라우저 새로고침.
+9. 두번째로 새로고침한, peer B의 dabaChannel과 peerConnection 정보가 사라지고, peer A에게 offer를 보냄.
+10. peer A는 자신의 첫번째 새로고침으로 인해, dabaChannel과 peerConnection 정보를 생성중이었는데, peer B의 두번째 새로고침으로 인해 새로운 dabaChannel과 peerConnection 정보가 유입됨으로 경합 발생.
+11. 기존 정보와의 경합에서 혼선이 발생하여 peer A는 disconnected 발생하여 연결이 끊김. 
+
+-------------------------------------------------------------------------------------------- 
+
+이 과정에서, peer B가 두번째 새로고침 하고, offer를 보낼 때, dabaChannel과 peerConnection 정보를 생성중이던 peer A의 진행을 rollback 시키거나, 진행 중이던 작업을 무시시키고, 깨끗한 상태에서 peer B의 offer를 받아야 한다.
+
+또는 peer A 새로고침 -> 즉시 peer B 새로고침 -> 즉시 peer A 새로고침 시에도 새로고침을 당한 상대 peer의 진행을 rollback 시키거나, 진행 중이던 작업을 무시시키고, 깨끗한 상태에서 peer B의 offer를 받아야 한다.
+
+브라우저에 접속하자 마자, signalingServer 연결시키고, offer, anser, candidate를 주고 받고, 연결 완료 후 메시지 전송까지 할 수 있는 전체 코드를 작성해라.

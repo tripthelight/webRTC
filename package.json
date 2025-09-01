@@ -13,7 +13,6 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "express": "^4.21.1",
     "nodemon": "^3.1.7",
     "purgecss-webpack-plugin": "^7.0.2",
     "socket.io": "^4.8.1"
@@ -31,6 +30,7 @@
     "css-loader": "^7.1.2",
     "css-minimizer-webpack-plugin": "^7.0.2",
     "dotenv": "^17.2.1",
+    "express": "^5.1.0",
     "file-loader": "^6.2.0",
     "html-loader": "^5.1.0",
     "html-webpack-plugin": "^5.6.4",
@@ -38,6 +38,7 @@
     "ioredis": "^5.7.0",
     "lit": "^3.3.1",
     "mini-css-extract-plugin": "^2.9.4",
+    "nanoid": "^5.1.5",
     "postcss-discard-comments": "^7.0.4",
     "postcss-import": "^16.1.1",
     "prettier": "^3.4.2",
