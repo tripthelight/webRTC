@@ -1,1 +1,1 @@
-console.log('main init');
+window.sessionStorage.clear();

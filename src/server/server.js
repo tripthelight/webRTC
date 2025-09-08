@@ -1,14 +1,11 @@
 import dotenv from 'dotenv';
 dotenv.config();
-
-
 import express from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -31,7 +28,7 @@ wss.on('connection', (ws) => {
 
     // 1) 방 참가
     if (msg.type === 'join') {
-      const roomName = String(msg.room || '').trim();
+      const roomName = String(msg.roomName || '').trim();
       if (!roomName) return;
 
       // 방 초기화
@@ -63,7 +60,7 @@ wss.on('connection', (ws) => {
       // 상대 id (있을 수 있음)
       const otherId = room.order.find((id) => id !== ws.id);
       const payload = {
-        type: 'joined',
+        type: 'role',
         you: ws.id,
         polite,
         room: roomName,
@@ -87,11 +84,12 @@ wss.on('connection', (ws) => {
     }
 
     // 2) 시그널 릴레이 (description/candidate/bye 등)
-    if (msg.type === 'signal' && ws.room) {
+    if (msg.type === 'description' && ws.room) {
       const room = ROOMS.get(ws.room);
       if (!room) return;
 
       const toId = msg.to;
+
       if (!toId) return;
       const toWs = room.peers.get(toId);
       if (!toWs || toWs.readyState !== toWs.OPEN) return;
@@ -99,7 +97,7 @@ wss.on('connection', (ws) => {
       // 그대로 상대에게 릴레이 (from 포함)
       try {
         toWs.send(JSON.stringify({
-          type: 'signal',
+          type: 'description',
           from: ws.id,
           signal: msg.signal,
         }));
@@ -142,7 +140,8 @@ function cleanup(ws) {
   ws.room = null;
 }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log('listening http://localhost:' + PORT);
+const PORT = process.env.RTC_PORT || 5000;
+const HOST = process.env.RTC_HOST || "59.186.79.36";
+server.listen(PORT, HOST, () => {
+  console.log(`Server is running on http://${HOST}:${PORT}`);
 });
