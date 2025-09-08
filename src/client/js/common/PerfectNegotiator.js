@@ -42,7 +42,7 @@ export default class PerfectNegotiator {
         this.makingOffer = true;
         // (로컬 트랙/데이터채널이 준비되면) 로컬 SDP 생성 -> 전송
         await this.pc.setLocalDescription(); // signalingState : have-local-offer
-        const localPeer = sessionStorage.getItem('localPeer') || null;
+        const remotePeer = sessionStorage.getItem('remotePeer') || null;
 
         // console.log('STEP 3' + ' ' + this.polite + ' ' + peer);
         // console.log('this.pc : ', this.pc);
@@ -51,7 +51,7 @@ export default class PerfectNegotiator {
         this.send({
           type: 'description',
           signal: this.pc.localDescription,
-          to: localPeer
+          to: remotePeer
         });
       } finally {
         this.makingOffer = false;
@@ -80,13 +80,13 @@ export default class PerfectNegotiator {
     this.polite = !!polite;
 
     // impolite(false)만 주도적으로 채널 생성 (항상 한쪽만 생성)
-    if (!this.polite && !this.dc) {
-      // 기다리고 있는 peer
-      // 첫번째 접속 peer
-      // 새로고침 당한 peer
-      this.dc = this.pc.createDataChannel('chat');
-      this.#wireDataChannel(this.dc, this._onData, this._onOpen);
-    };
+    // if (!this.polite && !this.dc) {
+    //   // 기다리고 있는 peer
+    //   // 첫번째 접속 peer
+    //   // 새로고침 당한 peer
+    //   this.dc = this.pc.createDataChannel('chat');
+    //   this.#wireDataChannel(this.dc, this._onData, this._onOpen);
+    // };
   };
 
   /** 서버에서 온 모든 메시지를 그대로 젛어주면 됩니다. */
@@ -95,6 +95,7 @@ export default class PerfectNegotiator {
 
     if (msg.type === 'role') {
       sessionStorage.setItem('localPeer', msg.you || '');
+      sessionStorage.setItem('remotePeer', msg.peer || '');
       this.setPolite(!!msg.polite);
       return;
     };
@@ -102,7 +103,11 @@ export default class PerfectNegotiator {
     // 두번째 접속 peer B(polite)가 보냄
     // 첫번째 접속 peer A(impolite)가 받고 offer 생성해서 peer B(polite)에게 보냄
     if (msg.type === 'peer-joined') {
-      sessionStorage.setItem('peer', msg.peer || '');
+      if (!this.polite && !this.dc) {
+        sessionStorage.setItem('remotePeer', msg.peer || '');
+        this.dc = this.pc.createDataChannel('chat');
+        this.#wireDataChannel(this.dc, this._onData, this._onOpen);
+      };
       return;
     };
 

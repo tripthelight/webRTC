@@ -90,6 +90,9 @@ wss.on('connection', (ws) => {
 
       const toId = msg.to;
 
+      console.log('toId : ', toId);
+
+
       if (!toId) return;
       const toWs = room.peers.get(toId);
       if (!toWs || toWs.readyState !== toWs.OPEN) return;
