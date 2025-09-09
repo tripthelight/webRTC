@@ -11,137 +11,139 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
 
-/** 메모리 방 구조: 방마다 최대 2명만 유지 */
-const ROOMS = new Map(); // roomName -> { order: string[], peers: Map<peerId, ws> }
+// 정적 파일 서빙 (클라이언트)
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.use(express.static(path.join(__dirname, '../client')));
+// ---- 메모리 내 룸/멤버 저장소 ----
+// ROOMS: Map<roomName, { members: Map<clientId, ws> }>
+const ROOMS = new Map();
+
+// 유틸: 문자 ID 정렬
+const sortIds = (ids) => ids.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+// 역할 계산(결정론적): 작은 clientId = impolite = dataChannel owner, 큰 clientId = polite
+export function computeRole(roomName, clientId) {
+  const room = ROOMS.get(roomName);
+  const ids = room ? sortIds([...room.members.keys()]) : [clientId];
+
+  // 상대가 있는 경우만 2명으로 가정(2인 룸)
+  const peerId = ids.find((id) => id !== clientId) || null;
+
+  // 2명 기준으로 역할 판정
+  let impoliteId = null;
+  let politeId = null;
+  if (ids.length >= 2) {
+    impoliteId = ids[0];
+    politeId = ids[1];
+  } else {
+    // 상대가 없을 때: 일단 자신이 impolite(상대 들어와도 규칙은 고정식이니 나중에 재계산됨)
+    impoliteId = clientId;
+  }
+
+  return {
+    polite: clientId === politeId,
+    dcOwner: clientId === impoliteId,
+    peerClientId: peerId
+  };
+}
+
+// HTTP 역할 API (리로드해도 같은 규칙으로 결정)
+app.get('/api/rooms/:room/role', (req, res) => {
+  const roomName = req.params.room;
+  const clientId = req.query.clientId;
+  if (!roomName || !clientId) return res.status(400).json({ error: 'roomName and clientId required' });
+  try {
+    const role = computeRole(roomName, clientId);
+    res.json(role);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- WebSocket 시그널링 ----
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+// 룸 내 모든 멤버에게 현재 멤버 리스트 브로드캐스트
+function broadcastRoomMembers(roomName) {
+  const room = ROOMS.get(roomName);
+  if (!room) return;
+  const members = [...room.members.keys()];
+  const payload = JSON.stringify({ type: 'room:members', members });
+  for (const ws of room.members.values()) {
+    safeSend(ws, payload);
+  }
+}
+
+// 안전 전송
+function safeSend(ws, data) {
+  if (ws.readyState === ws.OPEN) ws.send(data);
+}
 
 wss.on('connection', (ws) => {
-  ws.id = randomUUID();
-  ws.room = null;
+  let roomName = null;
+  let clientId = null;
 
-  ws.on('message', (buf) => {
+  ws.on('message', (raw) => {
     let msg;
-    try { msg = JSON.parse(buf.toString()); } catch { return; }
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-    // 1) 방 참가
-    if (msg.type === 'join') {
-      const roomName = String(msg.roomName || '').trim();
-      if (!roomName) return;
+    // 최초 등록
+    if (msg.type === 'hello') {
+      roomName = String(msg.roomName || '');
+      clientId = String(msg.clientId || '');
+      if (!roomName || !clientId) return;
 
-      // 방 초기화
-      if (!ROOMS.has(roomName)) {
-        ROOMS.set(roomName, { order: [], peers: new Map() });
-      }
+      // 룸 확보
+      if (!ROOMS.has(roomName)) ROOMS.set(roomName, { members: new Map() });
       const room = ROOMS.get(roomName);
 
-      // 2명 초과 방어: 2명이 이미 있으면 가장 오래된 사람을 제거(강제퇴장)
-      if (room.order.length >= 2) {
-        const kickId = room.order.shift(); // 오래된 맨 앞
-        const kickWs = room.peers.get(kickId);
-        if (kickWs && kickWs.readyState === kickWs.OPEN) {
-          try { kickWs.send(JSON.stringify({ type: 'kicked' })); } catch {}
-          try { kickWs.close(4000, 'room full, replaced'); } catch {}
-        }
-        room.peers.delete(kickId);
+      // 기존 연결 정리(중복 로그인/리로드 대비)
+      if (room.members.has(clientId)) {
+        try { room.members.get(clientId)?.close(); } catch {}
+        room.members.delete(clientId);
       }
+      room.members.set(clientId, ws);
 
-      // 현재 소켓 등록
-      room.order.push(ws.id);
-      room.peers.set(ws.id, ws);
-      ws.room = roomName;
+      // 본인에게 ack, 현재 멤버 목록 통지
+      safeSend(ws, JSON.stringify({ type: 'hello:ack', roomName, clientId }));
 
-      // polite 규칙: 방에서 '먼저 들어온 순서대로' impolite(false), polite(true)
-      const index = room.order.indexOf(ws.id);
-      const polite = index === 1; // 두 번째 입장자가 polite
-
-      // 상대 id (있을 수 있음)
-      const otherId = room.order.find((id) => id !== ws.id);
-      const payload = {
-        type: 'role',
-        you: ws.id,
-        polite,
-        room: roomName,
-        peer: otherId || null,
-      };
-      try { ws.send(JSON.stringify(payload)); } catch {}
-
-      // 상대에게도 "peer-joined" 알림
-      if (otherId) {
-        const otherWs = room.peers.get(otherId);
-        if (otherWs && otherWs.readyState === otherWs.OPEN) {
-          try {
-            otherWs.send(JSON.stringify({
-              type: 'peer-joined',
-              peer: ws.id,
-            }));
-          } catch {}
-        }
-      }
+      // 모두에게 멤버정보 브로드캐스트 (클라가 이걸 보고 역할 재조회)
+      broadcastRoomMembers(roomName);
       return;
     }
 
-    // 2) 시그널 릴레이 (description/candidate/bye 등)
-    if (msg.type === 'description' && ws.room) {
-      const room = ROOMS.get(ws.room);
-      if (!room) return;
-
-      const toId = msg.to;
-
-      console.log('toId : ', toId);
-
-
-      if (!toId) return;
-      const toWs = room.peers.get(toId);
-      if (!toWs || toWs.readyState !== toWs.OPEN) return;
-
-      // 그대로 상대에게 릴레이 (from 포함)
-      try {
-        toWs.send(JSON.stringify({
-          type: 'description',
-          from: ws.id,
-          signal: msg.signal,
+    // 시그널 릴레이
+    if (msg.type === 'signal') {
+      const { to, payload } = msg;
+      if (!roomName || !clientId || !to) return;
+      const room = ROOMS.get(roomName);
+      const peerWs = room?.members.get(String(to));
+      if (peerWs) {
+        safeSend(peerWs, JSON.stringify({
+          type: 'signal',
+          from: clientId,
+          payload // { kind: 'sdp'|'ice', data: ... }
         }));
-      } catch {}
-      return;
-    }
-
-    // 3) 떠남(옵션)
-    if (msg.type === 'leave' && ws.room) {
-      // 클라이언트가 능동적으로 나간 경우
-      cleanup(ws);
+      }
       return;
     }
   });
 
-  ws.on('close', () => cleanup(ws));
-  ws.on('error', () => cleanup(ws));
-});
-
-function cleanup(ws) {
-  if (!ws.room) return;
-  const room = ROOMS.get(ws.room);
-  if (!room) return;
-
-  // 방에서 제거
-  room.peers.delete(ws.id);
-  room.order = room.order.filter((id) => id !== ws.id);
-
-  // 상대에게 떠났음을 알림
-  const otherId = room.order[0];
-  if (otherId) {
-    const otherWs = room.peers.get(otherId);
-    if (otherWs && otherWs.readyState === otherWs.OPEN) {
-      try { otherWs.send(JSON.stringify({ type: 'peer-left', peer: ws.id })); } catch {}
+  ws.on('close', () => {
+    if (roomName && clientId) {
+      const room = ROOMS.get(roomName);
+      if (room) {
+        room.members.delete(clientId);
+        if (room.members.size === 0) {
+          ROOMS.delete(roomName);
+        } else {
+          broadcastRoomMembers(roomName);
+        }
+      }
     }
-  }
-
-  // 방이 비면 정리
-  if (room.order.length === 0) ROOMS.delete(ws.room);
-  ws.room = null;
-}
+  });
+});
 
 const PORT = process.env.RTC_PORT || 5000;
 const HOST = process.env.RTC_HOST || "59.186.79.36";
