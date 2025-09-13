@@ -27,32 +27,31 @@ ws.addEventListener('message', async (ev) => {
   const msg = JSON.parse(ev.data);
 
   if (msg.type === 'role') {
-    negotiator = new PerfectNegotiator(pc, { polite: msg.polite });
+    // [+] STEP 2: sendSignal 주입
+    negotiator = new PerfectNegotiator(pc, {
+      polite: msg.polite,
+      sendSignal: (payload) => {
+        ws.send(JSON.stringify({ type: 'signal', payload }));
+      },
+    });
 
-    // 로컬 ICE를 신호 서버로 중계
-    negotiator.onLocalIce = (cand) => {
-      ws.send(JSON.stringify({ type: 'signal', payload: { ice: cand } }));
-    };
-
-    console.log(`[STEP 1] 내 역할: ${msg.polite ? 'polite(true)' : 'impolite(false)'}`);
-
-    // impolite 쪽이 먼저 DC를 만드는 기본 패턴
-    if (!msg.polite) {
-      const dc = pc.createDataChannel('chat');
-      negotiator.setDataChannel(dc);
-    } else {
-      pc.ondatachannel = (e) => {
-        negotiator.setDataChannel(e.channel);
-      };
-    };
+    // polite는 수신 대기, impolite는 DC를 '지금은' 만들지 않음 (paired 이후로 미룸)
+    pc.ondatachannel = (e) => negotiator.setDataChannel(e.channel);
   };
 
+  if (msg.type === 'paired') {
+    // 이제부터 협상/ICE 송신 허용
+    negotiator?.markReady();
+
+    // 👇 impolite만 DC 생성 (이 타이밍이면 상대가 존재하므로 offer가 유실되지 않음)
+    if (!negotiator?.polite && !negotiator?.dc) {
+      const dc = pc.createDataChannel('chat');
+      negotiator.setDataChannel(dc);
+    }
+  }
+
   if (msg.type === 'signal') {
-    const { payload } = msg;
-    // 1단계에서는 ICE만 수신 처리 (SDP는 다음 단계에서)
-    if (payload.ice) {
-      try { await pc.addIceCandidate(payload.ice); }
-      catch(err) { console.warn(`addIceCandidate error (STEP 1) : `, err); };
-    };
+    // [+] STEP 2: SDP와 ICE 모두 클래스에 위임
+    await negotiator?.receiveSignal(msg.payload);
   };
 });

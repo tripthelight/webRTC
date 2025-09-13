@@ -33,18 +33,26 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'room-full' }));
         ws.close();
         return;
-      }
+      };
 
+      // 먼저: role 통지
       // 먼저 들어온 피어 = impolite(false), 두 번째 피어 = polite(true)
       const polite = peers.length === 1;
       peers.push(ws);
-
       ws.send(JSON.stringify({ type: 'role', polite }));
 
-      // 상대에게 조인 알림(선택)
+
+      // 모두에게 입장 알림(선택)
       peers.forEach(p => {
         if (p !== ws) p.send(JSON.stringify({ type: 'peer-joined', id }));
       });
+
+      // 2명이 되면 양쪽에 'paired'를 보내 협상 시작 신호를 줌
+      if (peers.length === 2) {
+        const [p0, p1] = peers;
+        p0.send(JSON.stringify({ type: 'paired', orderId: p1.id }));
+        p1.send(JSON.stringify({ type: 'paired', orderId: p0.id }));
+      };
       return;
     }
 
