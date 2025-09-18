@@ -8,7 +8,7 @@ export function createSignaling(room) {
     try {
       const msg = JSON.parse(ev.data);
       handlers.forEach(h => h(msg));
-    } catch {}
+    } catch (error) {}
   });
 
   return {

@@ -5,7 +5,6 @@ import http from 'http';
 import {WebSocketServer} from 'ws';
 import path from 'path';
 import {fileURLToPath} from 'url';
-import {json} from 'stream/consumers';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -13,29 +12,55 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
-app.use(express.static(path.join(__dirname, '..', 'client', 'public')));
-
-// roomId -> Set<{ id, ws }>
+// roomId => Set<WebSocket>
 const rooms = new Map();
 
+/* server.on('upgrade', (req, socket, head) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+
+    // 원하는 경로만 허용 (선택)
+    if (url.pathname !== '/ws') {
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      // 최종 업그레이드 완료 후 connection 이벤트 발생시킴
+      wss.emit('connection', ws, req);
+    });
+  } catch (e) {
+    socket.destroy();
+  }
+}); */
+
 wss.on('connection', (ws, req, searchParams) => {
+  // console.log('searchParams : ', searchParams);
+  // const roomId = searchParams.get('room') || 'test';
+
   const url = new URL(req.url, `http://${req.headers.host}`);
   const roomId = url.searchParams.get('room') ?? 'test';
-  if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+
+  // console.log('searchParams :', url.searchParams.toString());
+  // console.log('roomId :', roomId);
+
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, new Set());
+  }
   const room = rooms.get(roomId);
+  const polite = room.size === 1; // 0명일 때 들어오면 impolite(false), 1명일 때 들어오면 polite(true)
   room.add(ws);
 
-  // 입장 알림 (나에게)
-  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size}));
+  // 입장 알림(나에게)
+  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size, polite}));
 
-  // 방의 다른 사람들에게 입장 브로드캐스트
+  // 방의 다른 사람에게 입장 브로드캐스트
   for (const peer of room) {
     if (peer !== ws) {
-      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size}));
+      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size, polite}));
     }
   }
 
-  // 메시지 릴레이
   ws.on('message', buf => {
     let msg = null;
     try {
@@ -52,13 +77,12 @@ wss.on('connection', (ws, req, searchParams) => {
   });
 
   ws.on('close', () => {
-    // 방에서 제거
     const r = rooms.get(roomId);
     if (!r) return;
     r.delete(ws);
     if (r.size === 0) rooms.delete(roomId);
     else {
-      // 남아있는 사람들에게 퇴장 브로드캐스트
+      // 남아 있는 사람에게 퇴장 브로드캐스트
       for (const peer of r) {
         peer.send(JSON.stringify({type: 'peer-leave', room: roomId, count: r.size}));
       }
