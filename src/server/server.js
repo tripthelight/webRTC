@@ -15,28 +15,26 @@ const wss = new WebSocketServer({server});
 
 app.use(express.static(path.join(__dirname, '..', 'client', 'public')));
 
-// roomId -> Set<{ id, ws }>
+// roomId -> Set<SebSocket>
 const rooms = new Map();
 
-wss.on('connection', (ws, req, searchParams) => {
+wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const roomId = url.searchParams.get('room') ?? 'test';
   if (!rooms.has(roomId)) rooms.set(roomId, new Set());
   const room = rooms.get(roomId);
-  const polite = room.size === 1; // 0명일 때 들어오면 impolite(false), 1명일 때 들어오면 polite(true)
   room.add(ws);
 
   // 입장 알림 (나에게)
-  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size, polite}));
+  ws.send(JSON.stringify({type: 'jponed', room: roomId, count: room.size}));
 
-  // 방의 다른 사람들에게 입장 브로드캐스트
+  // 방의 다른 사람들에게 입장 브로드케스팅
   for (const peer of room) {
     if (peer !== ws) {
-      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size, polite}));
+      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size}));
     }
   }
 
-  // 메시지 릴레이
   ws.on('message', buf => {
     let msg = null;
     try {
@@ -53,7 +51,6 @@ wss.on('connection', (ws, req, searchParams) => {
   });
 
   ws.on('close', () => {
-    // 방에서 제거
     const r = rooms.get(roomId);
     if (!r) return;
     r.delete(ws);

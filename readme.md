@@ -11,3 +11,7 @@
    - peerConnection, dataChannel, peerConnection.onicecandidate, dataChannel.onmessage 을 먼저 설정하고, offer, answer를 주고 받아야 새로고침 해도 재연결이 됨
    - TODO: server.js에서 연결되어 있는 user 연결이 좀 이상해..
    - 여러 브라우저에서 테스트 필요
+  
+4. chatGPT 검색
+- 3-3. 클라이언트 신호 유틸 만들기
+- client/src/ws/signaling.js 파일을 새로 만듭니다.
