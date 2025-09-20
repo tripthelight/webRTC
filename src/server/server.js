@@ -23,15 +23,16 @@ wss.on('connection', (ws, req, searchParams) => {
   const roomId = url.searchParams.get('room') ?? 'test';
   if (!rooms.has(roomId)) rooms.set(roomId, new Set());
   const room = rooms.get(roomId);
+  const polite = room.size === 1; // 0명일 때 들어오면 impolite(false), 1명일 때 들어오면 polite(true)
   room.add(ws);
 
   // 입장 알림 (나에게)
-  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size}));
+  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size, polite}));
 
   // 방의 다른 사람들에게 입장 브로드캐스트
   for (const peer of room) {
     if (peer !== ws) {
-      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size}));
+      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size, polite}));
     }
   }
 
@@ -67,7 +68,7 @@ wss.on('connection', (ws, req, searchParams) => {
 });
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '59.186.79.10';
+const HOST = process.env.RTC_HOST || '59.186.79.36';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });

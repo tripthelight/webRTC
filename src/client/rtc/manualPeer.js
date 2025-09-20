@@ -48,5 +48,35 @@ export function createManualPeer({signaling, log}) {
   }
 
   // --- 수신 신호 처리 ---
-  async function handleSignal({description, candidate}) {}
+  async function handleSignal({description, candidate}) {
+    try {
+      if (description) {
+        if (description.type === 'offer') {
+          await pc.setRemoteDescription(description);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          signaling.send({type: 'signal', data: {description: pc.localDescription}});
+          log('got offer -> sent answer');
+        } else if (description.type === 'answer') {
+          await pc.setRemoteDescription(description);
+          log('got answer');
+        }
+      } else if (candidate) {
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (error) {
+          log('addIceCandidate error : ', error?.message);
+        }
+      }
+    } catch (error) {
+      log('handleSignal error : ', error?.message);
+    }
+  }
+
+  function send(text) {
+    if (dc?.readyState === 'open') dc.send(text);
+    else log(`[dc] not open (state=${dc?.readyState})`);
+  }
+
+  return {pc, call, handleSignal, send};
 }
