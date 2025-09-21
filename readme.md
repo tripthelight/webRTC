@@ -13,5 +13,6 @@
    - 여러 브라우저에서 테스트 필요
   
 4. chatGPT 검색
-- 3-3. 클라이언트 신호 유틸 만들기
-- client/src/ws/signaling.js 파일을 새로 만듭니다.
+- 5-2. 클라이언트: PN 전용 Peer 뼈대 추가
+- 새 파일: client/src/rtc/peerPN.js
+- 일단 상태 변수/핵심 핸들러 이름만 만들어 둡니다. (아직 onnegotiationneeded 로직은 비워둠)

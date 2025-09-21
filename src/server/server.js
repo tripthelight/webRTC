@@ -23,15 +23,16 @@ wss.on('connection', (ws, req) => {
   const roomId = url.searchParams.get('room') ?? 'test';
   if (!rooms.has(roomId)) rooms.set(roomId, new Set());
   const room = rooms.get(roomId);
+  const polite = room.size === 1; // 0명일 때 들어오면 impolite(false), 1명일 때 들어오면 polite(true)
   room.add(ws);
 
   // 입장 알림 (나에게)
-  ws.send(JSON.stringify({type: 'jponed', room: roomId, count: room.size}));
+  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size, polite}));
 
   // 방의 다른 사람들에게 입장 브로드케스팅
   for (const peer of room) {
     if (peer !== ws) {
-      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size}));
+      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size, polite}));
     }
   }
 
