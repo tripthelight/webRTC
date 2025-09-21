@@ -59,7 +59,14 @@ export function createPeerPN({polite, signaling, log}) {
           }
           // polite: 내가 하던 것 되돌리고(rollback) 상대 offer를 먼저 수락
           log('[PN] offer collision: polite -> rollback & accept remote offer');
-          await Promise.all([pc.setLocalDescription({type: 'rollback'}), pc.setRemoteDescription(description)]);
+          /*
+          await Promise.all([
+            pc.setLocalDescription({ type: "rollback" }),
+            pc.setRemoteDescription(description)
+          ]);
+          */
+          await pc.setLocalDescription({type: 'rollback'}); // 롤백
+          await pc.setRemoteDescription(description); // 상대 offer 수락
         } else {
           // 충돌 아님 -> 정상적으로 원격 설명 적용
           await pc.setRemoteDescription(description);
