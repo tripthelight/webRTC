@@ -81,7 +81,11 @@
       "overviewRulerColor": "#ff0000"
     }
   ],
-  "editor.quickSuggestions": false, // 자동완성 인텔리센스 팝업 hide
+  "editor.quickSuggestions": {
+    "comments": "off",
+    "strings": "off",
+    "other": "off"
+  }, // 자동완성 인텔리센스 팝업 hide
   "editor.suggestOnTriggerCharacters": false, // 자동완성 인텔리센스 팝업 hide
   "editor.parameterHints.enabled": false, // 자동완성 인텔리센스 팝업 hide
   "vim.normalModeKeyBindingsNonRecursive": [
