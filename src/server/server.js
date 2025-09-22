@@ -16,7 +16,7 @@ const wss = new WebSocketServer({server});
 app.use(express.static(path.join(__dirname, '..', 'client', 'public')));
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.152';
+const HOST = process.env.RTC_HOST || '220.71.2.86';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
