@@ -13,6 +13,6 @@
    - 여러 브라우저에서 테스트 필요
   
 4. chatGPT 검색
-- 5-2. 클라이언트: PN 전용 Peer 뼈대 추가
-- 새 파일: client/src/rtc/peerPN.js
-- 일단 상태 변수/핵심 핸들러 이름만 만들어 둡니다. (아직 onnegotiationneeded 로직은 비워둠)
+- 6단계(PN 핵심 구현: glare 안전 협상)
+- 6-1. client/src/rtc/peerPN.js 전체 교체
+- 아래 코드로 덮어쓰기 하세요. (주석에 설명을 달았습니다)
