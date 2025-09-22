@@ -15,56 +15,6 @@ const wss = new WebSocketServer({server});
 
 app.use(express.static(path.join(__dirname, '..', 'client', 'public')));
 
-// riimId -> Set<WebSocket>
-const rooms = new Map();
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const roomId = url.searchParams.get('room') ?? 'test';
-  if (!rooms.has(roomId)) rooms.set(roomId, new Set());
-  const room = rooms.get(roomId);
-  const polite = room.size === 1; // 0명일 때 들어오면 impolite(false), 1명일 때 들어오면 polite(true)
-  room.add(ws);
-
-  // 입장 알림(나에게)
-  ws.send(JSON.stringify({type: 'joined', room: roomId, count: room.size, polite}));
-
-  // 방의 다른 사람들에게 입장 브로드캐스트
-  for (const peer of room) {
-    if (peer !== ws) {
-      peer.send(JSON.stringify({type: 'peer-join', room: roomId, count: room.size, polite}));
-    }
-  }
-
-  ws.on('message', buf => {
-    let msg = null;
-    try {
-      msg = JSON.parse(buf.toString());
-    } catch {
-      return;
-    }
-    // 간단 릴레이: 같은 방의 다른 사람에게만 전달
-    for (const peer of room) {
-      if (peer !== ws && peer.readyState === peer.OPEN) {
-        peer.send(JSON.stringify({type: 'relay', data: msg}));
-      }
-    }
-  });
-
-  ws.on('close', () => {
-    const r = rooms.get(roomId);
-    if (!r) return;
-    r.delete(ws);
-    if (r.size === 0) rooms.delete(roomId);
-    else {
-      // 남아있는 사람들에게 퇴장 브로드캐스트
-      for (const peer of r) {
-        peer.send(JSON.stringify({type: 'peer-leave', room: roomId, count: r.size}));
-      }
-    }
-  });
-});
-
 const PORT = process.env.RTC_PORT || 5000;
 const HOST = process.env.RTC_HOST || '220.71.2.86';
 server.listen(PORT, HOST, () => {
