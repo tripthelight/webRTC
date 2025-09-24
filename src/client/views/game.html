@@ -4,8 +4,33 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GAME</title>
+
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    .row { display:flex; gap:8px; margin-bottom:12px; flex-wrap: wrap; }
+    input, button { padding:8px 10px; font-size:14px; }
+    #log { white-space: pre-wrap; background:#111; color:#eee; padding:12px; border-radius:8px; height:260px; overflow:auto; }
+    .badge { display:inline-block; padding:2px 6px; border-radius:6px; background:#eee; margin-left:8px; font-size:12px; }
+  </style>
 </head>
 <body>
-  <h1>GAME</h1>
+  <h1>Perfect Negotiation - Step 3 (채팅 + 재협상)</h1>
+
+  <div class="row">
+    <input id="room" placeholder="방 이름 입력 (예: taptap)" />
+    <button id="connect">서버 연결 & 방 참여</button>
+    <span id="role" class="badge">role: -</span>
+    <span id="count" class="badge">peers: 0</span>
+  </div>
+
+  <div class="row">
+    <input id="chatInput" placeholder="메시지 입력 후 Enter 또는 전송" style="flex:1; min-width:240px;" />
+    <button id="sendBtn">전송</button>
+    <button id="renegotiateBtn" title="의도적으로 재협상 트리거">재협상</button>
+    <button id="restartIceBtn" title="ICE 연결 재시작 시도">ICE 재시작</button>
+    <button id="clearLogBtn">로그 지우기</button>
+  </div>
+
+  <div id="log"></div>
 </body>
 </html>

@@ -11,7 +11,7 @@
   "prettier.singleQuote": true, // 큰따옴표 대신 작은따옴표 사용
   "prettier.arrowParens": "avoid", // 단일 매개변수의 화살표 함수 괄호 제거
   "prettier.endOfLine": "lf", // 줄 끝을 LF로 통일
-  "editor.formatOnSave": true, // 저장 시 자동 포맷팅 설정
+  "editor.formatOnSave": false, // 저장 시 자동 포맷팅 설정
   "files.trimTrailingWhitespace": true, // 불필요한 끝 공백 제거
   "[markdown]": {
     "files.trimTrailingWhitespace": false // Markdown 파일은 끝 공백 제거하지 않음
