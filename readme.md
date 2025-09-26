@@ -13,5 +13,6 @@
    - 여러 브라우저에서 테스트 필요
   
 4. chatGPT 검색
-- // WS 재연결 후 자동 재합류됨
-- log(`[WS] 재연결됨 → 방("${room}") 재합류 완료(서버 수락 후 'joined' 올 것)`);
+- 3-2. 클라이언트 수정 (client/src/main.js)
+- 핵심 추가: roomName 정하기 → join 전송 → joined/room-full/peer-join/peer-leave
+- 
