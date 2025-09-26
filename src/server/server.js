@@ -14,86 +14,67 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
-app.use(express.static(path.join(__dirname, '..', 'client', 'public')));
+app.use(express.static('public')); // public/index.html, bundle.js 서빙
 
-/**
- * room: Map<string, Set<WebSpcket>>
- * 각 ws에는 { id, room, role } 를 속성으로 부여
- */
-const rooms = new Map();
+// 아주 단순한 "룸 → 소켓 집합" 매핑
+const ROOMS = new Map(); // roomName -> Set(ws)
 
-function send(ws, obj) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
-};
+function joinRoom(ws, roomName) {
+  if (!ROOMS.has(roomName)) ROOMS.set(roomName, new Set());
+  ROOMS.get(roomName).add(ws);
+  ws._room = roomName;
+}
 
-function broadcast(roomName, obj) {
-  const set = rooms.get(roomName);
-  if (!set) return;
-  for (const peer of set) send(peer, obj);
-};
+function leaveRoom(ws) {
+  const room = ws._room;
+  if (!room || !ROOMS.has(room)) return;
+  ROOMS.get(room).delete(ws);
+  if (ROOMS.get(room).size === 0) ROOMS.delete(room);
+  ws._room = null;
+}
 
-function updateCount(roomName) {
-  const set = rooms.get(roomName);
-  const count = set ? set.size : 0;
-  broadcast(roomName, { type: "peer-count", count });
-};
+function broadcastToRoom(roomName, data, except) {
+  const members = ROOMS.get(roomName);
+  if (!members) return;
+  for (const client of members) {
+    if (client !== except && client.readyState === client.OPEN) {
+      client.send(data);
+    }
+  }
+}
 
-wss.on("connection", (ws) => {
-  ws.id = randomUUID();
-
-  ws.on("message", (data) => {
+wss.on('connection', (ws) => {
+  ws.on('message', (raw) => {
     let msg;
-    try { msg = JSON.parse(data.toString()); }
-    catch (e) { return send(ws, { type: 'error', message: 'Invalid JSON' }); };
+    try { msg = JSON.parse(raw); }
+    catch { return; }
 
-    // join ------------------------------------
-    if (msg.type === "join") {
-      const roomName = String(msg.room || '').trim();
-      if (!roomName) return send(ws, { type: 'error', message: 'room required' });
-
-      let set = rooms.get(roomName);
-      if (!set) { set = new Set(); rooms.set(roomName, set); };
-
-      if (set.size >= 2) {
-        return send(ws, { type: 'error', message: 'room full (max 2)' });
-      };
-
-      // 먼저 들어온 사람: impolite, 두 번째: polite
-      ws.room = roomName;
-      ws.role = (set.size === 0 ? "impolite" : "polite");
-      set.add(ws);
-
-      send(ws, { type: 'joined', room: roomName, you: ws.id, role: ws.role, count: set.size });
-      updateCount(roomName);
+    // 1) 입장
+    if (msg.type === 'join' && typeof msg.room === 'string') {
+      joinRoom(ws, msg.room);
+      ws.send(JSON.stringify({ type: 'joined', room: msg.room }));
+      // 현재 방의 다른 사람들에게 "누가 들어옴" 정도 신호
+      broadcastToRoom(msg.room, JSON.stringify({ type: 'peer-joined' }), ws);
       return;
-    };
+    }
 
-    // signal ----------------------------------
-    if (msg.type === "signal") {
-      const { room, payload } = msg;
-      if (!room || !rooms.get(room)) return;
-      for (const peer of rooms.get(room)) {
-        if (peer !== ws) send(peer, { type: 'signal', from: ws.id, payload });
-      }
+    // 2) 시그널 릴레이(방 브로드캐스트 버전)
+    //    - 2인 기준: "보내면 상대에게만 간다" 효과가 납니다(자기 자신 제외 브로드캐스트)
+    if (ws._room && msg.type === 'signal') {
+      broadcastToRoom(ws._room, JSON.stringify({ type: 'signal', payload: msg.payload }), ws);
       return;
-    };
-
-    send(ws, { type: 'error', message: `unknown type: ${msg.type}` });
+    }
   });
 
-  ws.on("close", () => {
-    const roomName = ws.room;
-    if (roomName && rooms.has(roomName)) {
-      const set = rooms.get(roomName);
-      set.delete(ws);
-      if (set.size === 0) rooms.delete(roomName);
-      else updateCount(roomName);
-    };
+  ws.on('close', () => {
+    const room = ws._room;
+    leaveRoom(ws);
+    if (room) broadcastToRoom(room, JSON.stringify({ type: 'peer-left' }), ws);
   });
 });
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.79';
+const HOST = process.env.RTC_HOST || '220.71.2.111';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
