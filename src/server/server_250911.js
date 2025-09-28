@@ -155,7 +155,7 @@ wss.on('connection', ws => {
 });
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.111';
+const HOST = process.env.RTC_HOST || '220.71.2.78';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });

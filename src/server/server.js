@@ -16,7 +16,7 @@ const wss = new WebSocketServer({server});
 
 // 방: Map<roomName, Set<ws>>
 const rooms = new Map();
-// 역방향 메타: Map<ws, { roomName, clientId }>
+// 역방향 메타: Map<ws, { roomName, clientId, userId }>
 const meta = new Map();
 
 function send(ws, obj) {
@@ -30,6 +30,17 @@ function broadcastRoom(roomName, exceptWs, obj) {
       send(client, obj);
     }
   }
+}
+
+// ★ 같은 방 내 동일 userId 소켓 찾기
+function findSocketByUserId(roomName, userId) {
+  const set = rooms.get(roomName);
+  if (!set) return null;
+  for (const client of set) {
+    const m = meta.get(client);
+    if (m?.userId === userId) return client;
+  }
+  return null;
 }
 
 wss.on('connection', (ws) => {
@@ -46,33 +57,48 @@ wss.on('connection', (ws) => {
     if (msg.type === 'join') {
       const roomName = String(msg.roomName || '').trim();
       const clientId = String(msg.clientId || '').trim();
-      if (!roomName || !clientId) {
+      const userId   = String(msg.userId || '').trim(); // ★ 추가
+      if (!roomName || !clientId || !userId) {
         send(ws, { type: 'error', reason: 'invalid_join' });
         return;
       }
 
-      // 방 생성 or 조회
       if (!rooms.has(roomName)) rooms.set(roomName, new Set());
       const set = rooms.get(roomName);
 
-      // 정원 2 체크
-      if (set.size >= 2) {
+      // ★ takeover: 같은 userId가 이미 있으면 그 소켓을 교체
+      const sameUserSocket = findSocketByUserId(roomName, userId);
+      if (sameUserSocket) {
+        // 기존 소켓 정리 및 교체 알림
+        const oldMeta = meta.get(sameUserSocket);
+        set.delete(sameUserSocket);
+        meta.delete(sameUserSocket);
+        try { sameUserSocket.close(); } catch {}
+        // 남들에게 알림(기존 clientId가 바뀐다고 알려주고 싶다면 'peer-replace' 사용)
+        broadcastRoom(roomName, ws, {
+          type: 'peer-replace',
+          roomName,
+          oldClientId: oldMeta?.clientId,
+          newClientId: clientId,
+          userId
+        });
+      } else if (set.size >= 2) {
+        // 정원 2 체크(★ 동일 userId는 위에서 이미 처리하므로 여기선 순수 인원 초과만)
         send(ws, { type: 'room-full', roomName });
         return;
       }
 
-      // 방 등록 + 메타 저장
+      // 등록
       set.add(ws);
-      meta.set(ws, { roomName, clientId });
+      meta.set(ws, { roomName, clientId, userId });
 
-      // 역할 부여: 첫 입장자 impolite(false), 두 번째 polite(true)
       const polite = set.size === 1 ? false : true;
 
-      // 본인에게 입장 확인 + 역할 정보
       send(ws, {
         type: 'joined',
         roomName,
         clientId,
+        userId,
         polite,
         peers: Array.from(set)
           .filter(c => c !== ws)
@@ -80,13 +106,27 @@ wss.on('connection', (ws) => {
           .filter(Boolean)
       });
 
-      // 다른 참가자들에게도 새 참가자 알림
       broadcastRoom(roomName, ws, {
         type: 'peer-join',
         roomName,
-        clientId
+        clientId,
+        userId
       });
+      return;
+    }
 
+    if (msg.type === 'bye') {
+      // ★ 즉시 퇴장 처리
+      const m = meta.get(ws);
+      if (!m) return;
+      const { roomName, clientId } = m;
+      const set = rooms.get(roomName);
+      if (set) {
+        set.delete(ws);
+        meta.delete(ws);
+        if (set.size === 0) rooms.delete(roomName);
+        else broadcastRoom(roomName, ws, { type: 'peer-leave', roomName, clientId });
+      }
       return;
     }
 
@@ -94,7 +134,6 @@ wss.on('connection', (ws) => {
     if (msg.type === 'signal') {
       const m = meta.get(ws);
       if (!m) return;
-      // target 지정이 있으면 특정 상대에게만 릴레이, 없으면 룸 내 나를 제외한 모두에게
       if (msg.to) {
         const set = rooms.get(m.roomName);
         for (const client of set || []) {
@@ -118,20 +157,13 @@ wss.on('connection', (ws) => {
     if (set) {
       set.delete(ws);
       if (set.size === 0) rooms.delete(roomName);
-      else {
-        // 남은 참가자에게 퇴장 알림
-        broadcastRoom(roomName, ws, {
-          type: 'peer-leave',
-          roomName,
-          clientId
-        });
-      }
+      else broadcastRoom(roomName, ws, { type: 'peer-leave', roomName, clientId });
     }
   });
 });
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.111';
+const HOST = process.env.RTC_HOST || '220.71.2.78';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
