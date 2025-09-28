@@ -6,13 +6,19 @@
   <title>GAME</title>
 
   <style>
-    body { font-family: system-ui, sans-serif; margin: 24px; }
-    #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 12px; height: 200px; overflow: auto; }
-    input, button { margin: 4px 0; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", Arial; padding: 16px; }
+    #log { white-space: pre-wrap; background:#f7f7f7; padding:12px; border-radius:8px; min-height:120px; }
+    button { margin-right:8px; }
   </style>
 </head>
 <body>
-  <h1>Step 1: WS 연결만 확인</h1>
-  <p>브라우저 콘솔을 열어 로그를 보세요(F12).</p>
+  <h1>Step 3: RTCPeerConnection 뼈대 + onnegotiationneeded 관찰</h1>
+  <p>상태: <strong id="wsState">disconnected</strong></p>
+  <p>
+    <button id="btnConnect">Connect</button>
+    <button id="btnDisconnect">Disconnect</button>
+    <button id="btnStart">Start P2P (아직 시그널링 없음)</button>
+  </p>
+  <div id="log"></div>
 </body>
 </html>
