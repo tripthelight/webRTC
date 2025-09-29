@@ -1,7 +1,7 @@
 // import {Signaling} from '../../../ws/signaling.js';
 // import {createManualPeer} from '../../../rtc/manualPeer.js';
 // import {createPeer} from '../../../rtc/peerPN.js';
-import { createPeer, openMyDataChannel, setSignaling, onSignalMessage } from '../../../rtc/rtc.js';
+import { createPeer, openMyDataChannel, setSignaling, onSignalMessage, setLocalId } from '../../../rtc/rtc.js';
 
 const $ = (sel) => document.querySelector(sel);
 const log = (msg) => {
@@ -27,10 +27,12 @@ $('#btnConnect').addEventListener('click', () => {
 
   ws.addEventListener('open', () => {
     setState('connected');
-    log('[client] ws open');
+    log(`[client] ws open (id=${clientId})`);
 
     // 이번 단계: Peer 만들기 + 시그널 전송 함수 등록
     createPeer();
+    // ★ 내 id를 rtc에 주입 → 양쪽이 동일한 규칙(isPolite = myId > remoteId) 사용
+    setLocalId(clientId);
     setSignaling((msg) => {
       // 모든 시그널에 sender id를 붙여서 보냄
       ws.send(JSON.stringify({ ...msg, from: clientId }));
