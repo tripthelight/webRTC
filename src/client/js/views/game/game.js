@@ -1,265 +1,294 @@
 // import {Signaling} from '../../../ws/signaling.js';
 // import {createManualPeer} from '../../../rtc/manualPeer.js';
 // import {createPeer} from '../../../rtc/peerPN.js';
-
-function log(s) {
-  console.log(s);
-  $status.textContent = s;
-}
-
-const roomId = 'room-1'; // 필요 시 동적 생성/URL 파라미터로 대체 가능
-const $status = document.getElementById('status');
+import { scheduleRefresh } from "../../common/refreshScheduler.js"
 
 // ----- WebSocket signaling -----
 const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
-// const ws = new WebSocket(WS_URL);
-let ws;                    // 재생성 가능
-const outbox = [];         // OPEN 전/닫힘 중 신호 보관 (이전 단계 그대로 사용)
-function wsSend(type, payload) {
-  const msg = JSON.stringify({ type, ...payload });
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg);
-  else {
-    outbox.push(msg);
-    console.log('📦 queued signal (len=', outbox.length, ')', type);
-  }
-}
-function flushOutbox() {
-  while (ws && ws.readyState === WebSocket.OPEN && outbox.length) {
-    ws.send(outbox.shift());
-  }
-}
+const ws = new WebSocket(WS_URL);
+
+const roomId = "my-room-1"; // 테스트옹. 실제로는 URL/서버가 주는 값 사용
 
 let pc;
-let isPolite = false; // 후접속자가 true
+let polite = true; // 서버에서 role 받기 전 기본값(임시)
 let makingOffer = false;
 let ignoreOffer = false;
 let isSettingRemoteAnswerPending = false;
-let pendingCandidates = []; // remoteDescription 세팅 전 받은 ICE 임시 보관
-let havePeer = false; // 상대 존재 여부
-let started = false;  // 초기 협상(내가 dataChannel 생성) 시작 여부
-let myCh = null;      // 내가 만든 dataChannel 핸들
-let iceRestarting = false;
-let discoTimer = null;
-let lastRestartAt = 0;
-const RESTART_COOLDOWN = 5000; // ms: 과도한 재시작 방지
 
-let reconnectAttempt = 0;
-let reconnectTimer = null;
-const BASE_BACKOFF = 300;   // ms
-const MAX_BACKOFF  = 5000;  // ms
-function backoffDelay() {
-  const d = Math.min(MAX_BACKOFF, BASE_BACKOFF * Math.pow(2, reconnectAttempt));
-  const jitter = Math.random() * 200; // 소량 지터
-  return d + jitter;
+let dc = null;
+const pendingCandidates = []; // ICE 후보 버퍼
+
+function log(...a){ console.log('[RTC]', ...a); }
+
+// [+] 통계 수집 보조 변수
+let statsTimer = null;
+let lastStats = null;
+
+// [+] 통계 수집 시작/중지
+function startStats() {
+  stopStats();
+  statsTimer = setInterval(async () => {
+    if (!pc) return;
+    try {
+      const reports = await pc.getStats();
+      let now = performance.now();
+
+      let bytesSent = 0, bytesRecv = 0;
+      let packetsRecv = 0, packetsLostIn = 0;
+      let rtt = null;
+
+      reports.forEach((r) => {
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
+          if (typeof r.currentRoundTripTime === 'number') rtt = r.currentRoundTripTime; // sec
+        }
+        if (r.type === 'outbound-rtp' && !r.isRemote) {
+          if (typeof r.bytesSent === 'number') bytesSent += r.bytesSent;
+        }
+        if (r.type === 'inbound-rtp' && !r.isRemote) {
+          if (typeof r.bytesReceived === 'number') bytesRecv += r.bytesReceived;
+          if (typeof r.packetsReceived === 'number') packetsRecv += r.packetsReceived;
+          if (typeof r.packetsLost === 'number')     packetsLostIn += r.packetsLost;
+        }
+      });
+
+      if (lastStats) {
+        const dt = (now - lastStats.ts) / 1000; // sec
+        if (dt > 0.001) {
+          const upKbps   = ( (bytesSent - lastStats.bytesSent) * 8 / dt ) / 1000;
+          const downKbps = ( (bytesRecv - lastStats.bytesRecv) * 8 / dt ) / 1000;
+          const dRecvPk  = (packetsRecv - lastStats.packetsRecv);
+          const dLostPk  = (packetsLostIn - lastStats.packetsLostIn);
+          const lossInPct = (dRecvPk + dLostPk) > 0 ? (dLostPk / (dRecvPk + dLostPk)) * 100 : 0;
+
+          log(
+            `STATS: up=${upKbps.toFixed(0)}kbps, down=${downKbps.toFixed(0)}kbps, ` +
+            `rtt=${rtt ? (rtt * 1000).toFixed(0) + 'ms' : 'n/a'}, lossIn=${lossInPct.toFixed(1)}%`
+          );
+        }
+      }
+      lastStats = { ts: now, bytesSent, bytesRecv, packetsRecv, packetsLostIn };
+    } catch (e) {
+      console.warn('getStats 실패:', e);
+    }
+  }, 2000);
 }
-function scheduleReconnect(reason = 'unknown') {
-  if (reconnectTimer) return;
-  const delay = backoffDelay();
-  console.log(`⚠️ ws ${reason} → ${Math.round(delay)}ms 후 재연결`);
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectAttempt++;
-    connectWS();
-  }, delay);
-}
-
-function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  ws = new WebSocket(WS_URL);
-
-  ws.addEventListener('open', () => {
-    reconnectAttempt = 0;
-    console.log('🔌 시그널 서버 연결됨, 방 참가 중...');
-    if (!pc) createPC();           // 혹시 아직 PC 미생성 상태면 생성
-    wsSend('join', { roomId });    // 방 자동 재참가
-    flushOutbox();                 // 큐에 쌓인 신호 즉시 전송
-  });
-
-  ws.addEventListener('message', async (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === 'role') {
-      isPolite = msg.role === 'polite';
-      log(`내 역할: ${msg.role}`);
-      if (!isPolite && havePeer && !started) startAsImpolite();
-    }
-    if (msg.type === 'peer-joined') {
-      havePeer = true;
-      log('상대가 방에 입장함');
-      if (!isPolite && !started) startAsImpolite();
-    }
-    if (msg.type === 'peer-left') {
-      havePeer = false;
-      log('상대가 방에서 나감 (재입장 시 재협상 예정)');
-      try { if (myCh && myCh.readyState !== 'closed') myCh.close(); } catch {}
-      myCh = null;
-      resetPC(); // 다음 연결을 위해 깨끗이
-    }
-    if (msg.type === 'signal') {
-      await handleSignal(msg.payload);
-    }
-  });
-
-  ws.addEventListener('close', () => scheduleReconnect('close'));
-  ws.addEventListener('error', () => scheduleReconnect('error'));
+function stopStats() {
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = null;
+  lastStats = null;
 }
 
-async function maybeRestartIce(reason = '') {
-  // 오직 impolite(선접속자)만 트리거 → glare 방지
-  if (isPolite) return;
-  if (!havePeer) return;
-  if (pc.signalingState !== 'stable') return;
-  if (makingOffer || isSettingRemoteAnswerPending || iceRestarting) return;
-  if (Date.now() - lastRestartAt < RESTART_COOLDOWN) return;
+// [+] ICE 재시작 보조 변수
+let iceRestartTimer = null;
+const ICE_RESTART_DELAY = 1200; // ms
 
+function send(msg) {
+  ws.readyState === WebSocket.OPEN
+    ? ws.send(JSON.stringify(msg))
+    : ws.addEventListener('open', () => ws.send(JSON.stringify(msg)), { once: true });
+}
+
+function bindDataChannel(channel) { // [+] 공통 바인딩
+  dc = channel;
+  dc.onopen = () => log('DataChannel open ========================== ');
+  dc.onmessage = (e) => log('DataChannel msg <=', e.data);
+  dc.onclose = () => log('DataChannel close');
+}
+
+// [+] 끊김 시 임폴라이트가 재시작 오퍼 1회 시도
+async function tryIceRestart() {
+  if (polite) { log('polite => ICE restart는 대기'); return; }
+  if (!pc) return;
+  if (pc.signalingState !== 'stable') {
+    log('ICE restart 보류: signalingState=', pc.signalingState);
+    return;
+  }
   try {
-    iceRestarting = true;
-    lastRestartAt = Date.now();
-    console.log('🧊 ICE restart start:', reason);
+    makingOffer = true;
     await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
-    wsSend('signal', { payload: { description: pc.localDescription } });
-  } catch (e) {
-    console.error('ICE restart error:', e);
+    send({ type: 'desc', desc: pc.localDescription });
+    log('impolite => ICE restart offer 전송');
+  } catch (err) {
+    console.error('ICE restart 실패:', err);
   } finally {
-    iceRestarting = false;
+    makingOffer = false;
+  }
+}
+function scheduleIceRestart() {                // [+]
+  if (iceRestartTimer) return;
+  iceRestartTimer = setTimeout(() => {
+    iceRestartTimer = null;
+    tryIceRestart();
+  }, ICE_RESTART_DELAY);
+}
+function cancelIceRestart() {                  // [+]
+  if (iceRestartTimer) {
+    clearTimeout(iceRestartTimer);
+    iceRestartTimer = null;
   }
 }
 
 function createPC() {
   pc = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
 
-  // Perfect Negotiation: onnegotiationneeded에서 offer 생성
-  pc.onnegotiationneeded = async () => {
-    if (!havePeer) {
-      log('onnegotiationneeded but no peer yet — skip');
-      return;
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      send({ type: 'candidate', candidate: e.candidate });
     }
+  };
+
+  // [+] polite(=첫 입장)는 채널을 만들지 않고, 상대 채널을 "받기만" 한다
+  pc.ondatachannel = (e) => {
+    log('ondatachannel');
+    bindDataChannel(e.channel);
+  };
+
+  // 핵심: Perfect Negotiation 기본 가드
+  pc.onnegotiationneeded = async () => {
     try {
+      // offer 시작은 impolite만(= 두 번째 입장자)
+      if (polite) {
+        log('polite => onnegotiationneeded 무시');
+        return;
+      }
       makingOffer = true;
-      log('onnegotiationneeded → createOffer');
       await pc.setLocalDescription(await pc.createOffer());
-      wsSend('signal', { payload: { description: pc.localDescription } });
-    } catch (e) {
-      console.error(e);
+      send({ type: 'desc', desc: pc.localDescription });
+      log('impolite => offer 전송');
+    } catch (err) {
+      console.error(err);
     } finally {
       makingOffer = false;
     }
   };
 
-  pc.onicecandidate = ({ candidate }) => {
-    wsSend('signal', { payload: { candidate } });
+  pc.onconnectionstatechange = () => {
+    log('pc.connectionState =', pc.connectionState);
+    // [+] 실패/연결끊김 시 재시작 예약, 연결되면 취소
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      scheduleIceRestart();
+      stopStats(); // 끊기면 통계 중지
+    } else if (pc.connectionState === 'connected' || pc.connectionState === 'completed') {
+      cancelIceRestart();
+      startStats(); // 연결되면 자동 통계 시작
+    } else if (pc.connectionState === 'closed') {
+      stopStats();
+    }
   };
 
-  pc.onconnectionstatechange = () => {
-    log(`pc.connectionState = ${pc.connectionState}`);
-    const st = pc.connectionState;
-    if (st === 'connected') {
-      if (discoTimer) { clearTimeout(discoTimer); discoTimer = null; }
+  // [+] iceConnectionState도 함께 관찰(브라우저별 차이 대비)
+  pc.oniceconnectionstatechange = () => {
+    log('pc.iceConnectionState =', pc.iceConnectionState);
+    if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+      scheduleIceRestart();
+    } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      cancelIceRestart();
+    }
+  };
+
+  return pc;
+}
+
+// --- WS 수신 처리 ---
+ws.addEventListener('open', () => {
+  send({ type: 'join', roomId });
+});
+
+ws.addEventListener('message', async (ev) => {
+  const msg = JSON.parse(ev.data);
+
+  if (msg.type === 'role') {
+    polite = !!msg.polite;
+    log('역할 배정:', { polite });
+    if (!pc) createPC();
+    return;
+  }
+
+  if (msg.type === 'ready') {
+    log('상대 입장 완료: 협상 가능');
+    // [+] 두 명이 모두 입장했을 때만 impolite가 DataChannel 생성 → onnegotiationneeded 트리거
+    if (!polite && !dc) {
+      const channel = pc.createDataChannel('game');  // ← 핵심: 이제 'ready'에서만 생성
+      bindDataChannel(channel);
+      dc.onopen = () => {
+        log('DataChannel open ========================== ');
+        dc.send('hello from impolite');
+      };
+    }
+    return;
+  }
+
+  if (msg.type === 'candidate') {
+    // remote SDP 설정 전에는 후보를 버퍼에 쌓아두었다가, 이후 일괄 적용
+    if (!pc.remoteDescription) {
+      pendingCandidates.push(msg.candidate);
+      log("candidate 버퍼링")
+    } else {
+      try {
+        await pc.addIceCandidate(msg.candidate);
+      } catch (err) {
+        console.warn('addIceCandidate 경고:', err);
+      }
+    }
+    return;
+  }
+
+  if (msg.type === 'desc') {
+    const desc = msg.desc;
+    const readyForOffer =
+      !makingOffer &&
+      (pc.signalingState === 'stable' || isSettingRemoteAnswerPending);
+
+    const offerCollision = desc.type === 'offer' && !readyForOffer;
+
+    ignoreOffer = !polite && offerCollision;
+    if (ignoreOffer) {
+      log('임폴라이트가 동시충돌 감지 -> offer 무시');
       return;
     }
-    if (st === 'disconnected' || st === 'failed') {
-      // 잠깐의 hiccup을 위해 짧게 디바운스 후 ICE 재시작
-      if (discoTimer) clearTimeout(discoTimer);
-      discoTimer = setTimeout(() => {
-        maybeRestartIce(`connectionState:${st}`);
-      }, 1500);
-    }
-  };
 
-  // (선택) 참고 로그
-  pc.oniceconnectionstatechange = () => {
-    console.log('iceConnectionState:', pc.iceConnectionState);
-  };
-
-  // 상대가 만든 DataChannel 수신 (polite 쪽은 보통 여기서 채널을 받음)
-  pc.ondatachannel = (ev) => {
-    const ch = ev.channel;
-    ch.onopen = () => log(`📥 datachannel open (label=${ch.label})`);
-    ch.onmessage = (e) => console.log('peer says:', e.data);
-  };
-}
-
-function resetPC() {
-  if (discoTimer) { clearTimeout(discoTimer); discoTimer = null; }
-  try { pc?.getSenders()?.forEach(s => s.track && s.track.stop()); } catch {}
-  try { pc?.close(); } catch {}
-  createPC();
-  started = false;
-  myCh = null;
-  pendingCandidates = [];
-  makingOffer = false;
-  ignoreOffer = false;
-  isSettingRemoteAnswerPending = false;
-  iceRestarting = false;
-  // lastRestartAt은 유지(짧은 시간 내 과도한 재시작 방지)
-  console.log('🔄 RTCPeerConnection reset');
-}
-
-async function handleSignal(payload) {
-  const { description, candidate } = payload;
-
-  try {
-    if (description) {
-      const readyForOffer =
-        !makingOffer && (pc.signalingState === 'stable' || isSettingRemoteAnswerPending);
-      const offerCollision = description.type === 'offer' && !readyForOffer;
-
-      ignoreOffer = !isPolite && offerCollision;
-      if (ignoreOffer) {
-        log('⚠️ glare: impolite가 상대 offer 무시');
-        return;
+    try {
+      if (desc.type === 'answer') {
+        isSettingRemoteAnswerPending = true;
       }
-
-      if (offerCollision) {
-        // polite는 rollback 후 상대 offer 수락
-        log('⚠️ glare: polite가 rollback');
-        await Promise.all([
-          pc.setLocalDescription({ type: 'rollback' }),
-          // no-op to yield
-        ]);
-      }
-
-      isSettingRemoteAnswerPending = description.type === 'answer';
-      await pc.setRemoteDescription(description);
+      await pc.setRemoteDescription(desc);
       isSettingRemoteAnswerPending = false;
 
-      // remoteDescription 세팅되었으니 보류된 ICE 처리
-      await flushPendingCandidates();
+      // [+] remote SDP가 설정되었으니, 버퍼된 후보를 일괄 적용
+      if (pendingCandidates.length) {
+        for (const c of pendingCandidates.splice(0)) {
+          try { await pc.addIceCandidate(c); }
+          catch (err) { console.warn('버퍼 후보 적용 경고:', err); }
+        }
+        log('버퍼 후보 적용 완료');
+      }
 
-      if (description.type === 'offer') {
+      if (desc.type === 'offer') {
         await pc.setLocalDescription(await pc.createAnswer());
-        wsSend('signal', { payload: { description: pc.localDescription } });
+        send({ type: 'desc', desc: pc.localDescription });
+        log('polite가 offer 수신 -> answer 전송');
       }
-      return;
+    } catch (err) {
+      console.error('setRemoteDescription 실패:', err);
     }
-
-    if (candidate) {
-      if (pc.remoteDescription) {
-        await pc.addIceCandidate(candidate);
-      } else {
-        pendingCandidates.push(candidate);
-      }
-      return;
-    }
-  } catch (err) {
-    console.error('signal handling error:', err);
   }
-}
+});
 
-async function flushPendingCandidates() {
-  for (const c of pendingCandidates) {
-    try { await pc.addIceCandidate(c); } catch (e) { console.error(e); }
+// [+] 테스트용 전역 함수: 버튼에서 호출
+window.__sendPing = () => {
+  if (dc && dc.readyState === 'open') {
+    dc.send('PING');
+    log('DataChannel msg => PING');
+  } else {
+    log('채널이 아직 open이 아님');
   }
-  pendingCandidates = [];
-}
+};
 
-function startAsImpolite() {
-  if (started) return;
-  started = true;
-  myCh = pc.createDataChannel('chat');
-  myCh.onopen = () => log('📤 datachannel open (내가 생성)');
-  myCh.onmessage = (e) => console.log('peer says:', e.data);
-}
+// [+] 통계 수동 제어(원하면 사용)
+window.__startStats = startStats;
+window.__stopStats  = stopStats;
 
-connectWS(); // 페이지 로드시 소켓 연결 시작
+// 특정 시간, 지정한 횟수만큼 브라우저 새로고침
+// scheduleRefresh();

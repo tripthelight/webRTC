@@ -14,81 +14,63 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
-const rooms = new Map(); // roomId -> Set of client objects
+/** ROOMS: roomId -> Set<WebSocket> (최대 2명) */
+const ROOMS = new Map();
 
-function send(ws, type, payload = {}) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type, ...payload }));
+function send(ws, msg) {
+  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
 wss.on('connection', (ws) => {
-  ws.id = Math.random().toString(36).slice(2);
-  ws.roomId = null;
+  let roomId = null;
 
-  ws.on('message', (data) => {
-    let msg;
-    try { msg = JSON.parse(data); } catch { return; }
+  ws.on('message', (buf) => {
+    const msg = JSON.parse(buf.toString());
 
     if (msg.type === 'join') {
-      const { roomId } = msg;
-      ws.roomId = roomId;
-      if (!rooms.has(roomId)) rooms.set(roomId, new Set());
-      const set = rooms.get(roomId);
+      roomId = msg.roomId;
+      if (!ROOMS.has(roomId)) ROOMS.set(roomId, new Set());
+      const room = ROOMS.get(roomId);
 
-      set.add(ws);
-      if (set.size === 1) {
-        // 방의 첫 참가자 = impolite
-        ws.role = 'impolite';
-        send(ws, 'role', { role: 'impolite' });
-      } else if (set.size === 2) {
-        // 기존 참가자 = impolite, 새 참가자 = polite
-        const others = [...set].filter(p => p !== ws);
-        const first = others[0];
-        first.role = 'impolite';
-        send(first, 'role', { role: 'impolite' });
-        ws.role = 'polite';
-        send(ws, 'role', { role: 'polite' });
-        // 서로에게 입장 알림
-        send(first, 'peer-joined', { peerId: ws.id });
-        send(ws, 'peer-joined',   { peerId: first.id });
-      } else {
-        // 2인 게임이라면 초과 인원은 거절하거나 무시 처리(선택)
+      if (room.size >= 2) {
+        send(ws, { type: 'full' });
+        return;
       }
+      room.add(ws);
 
+      // 역할 배정: 첫 번째 입장 = polite(true), 두 번째 입장 = polite(false; offerer)
+      const polite = room.size === 1 ? true : false;
+      send(ws, { type: 'role', polite });
+
+      // 두 명이 되면 서로에게 시작 신호
+      if (room.size === 2) {
+        for (const peer of room) send(peer, { type: 'ready' });
+      }
       return;
     }
 
-    if (msg.type === 'signal') {
-      const set = rooms.get(ws.roomId);
-      if (!set) return;
-      for (const peer of set) {
-        if (peer !== ws) {
-          send(peer, 'signal', { payload: msg.payload });
-        }
+    // 상대에게 그대로 릴레이(desc, candidate)
+    if (msg.type === 'desc' || msg.type === 'candidate') {
+      if (!roomId) return;
+      const room = ROOMS.get(roomId);
+      if (!room) return;
+      for (const peer of room) {
+        if (peer !== ws) send(peer, msg);
       }
-      return;
     }
   });
 
   ws.on('close', () => {
-    const set = rooms.get(ws.roomId);
-    if (!set) return;
-    set.delete(ws);
-    // 나간 사실을 상대에게 알림
-    for (const peer of set) {
-      send(peer, 'peer-left', { peerId: ws.id });
-    }
-    // 한 명만 남았다면, 남은 사람을 impolite로 재지정
-    if (set.size === 1) {
-      const [only] = [...set];
-      only.role = 'impolite';
-      send(only, 'role', { role: 'impolite' });
-    }
-    if (set.size === 0) rooms.delete(ws.roomId);
+    if (!roomId) return;
+    const room = ROOMS.get(roomId);
+    if (!room) return;
+    room.delete(ws);
+    if (room.size === 0) ROOMS.delete(roomId);
   });
 });
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.167';
+const HOST = process.env.RTC_HOST || '220.71.2.79';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
