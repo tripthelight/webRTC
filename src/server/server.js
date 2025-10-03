@@ -14,63 +14,88 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
-/** ROOMS: roomId -> Set<WebSocket> (최대 2명) */
-const ROOMS = new Map();
+const PORT = process.env.RTC_PORT || 5000;
+const HOST = process.env.RTC_HOST || '220.71.2.177';
+server.listen(PORT, HOST, () => {
+  console.log(`Server is running on http://${HOST}:${PORT}`);
+});
+
+/** rooms = { [roomName]: { a?: {ws, clientId}, b?: {ws, clientId} } } */
+const rooms = Object.create(null);
 
 function send(ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
+function partnerOf(room, slot) {
+  return slot === 'a' ? room.b : room.a;
+}
+
+function occupySlot(room, ws, clientId) {
+  // clientId가 기존 슬롯과 일치하면 교체(새로고침 대비, 서버 작업 최소화)
+  if (room.a?.clientId === clientId) { room.a = { ws, clientId }; return 'a'; }
+  if (room.b?.clientId === clientId) { room.b = { ws, clientId }; return 'b'; }
+  // 빈 슬롯에 배치
+  if (!room.a) { room.a = { ws, clientId }; return 'a'; }
+  if (!room.b) { room.b = { ws, clientId }; return 'b'; }
+  return null; // 가득참
+}
+
 wss.on('connection', (ws) => {
-  let roomId = null;
+  ws.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
 
-  ws.on('message', (buf) => {
-    const msg = JSON.parse(buf.toString());
-
+    // 1) 방 참가
     if (msg.type === 'join') {
-      roomId = msg.roomId;
-      if (!ROOMS.has(roomId)) ROOMS.set(roomId, new Set());
-      const room = ROOMS.get(roomId);
+      const { room: roomName, clientId } = msg;
+      if (!roomName || !clientId) return;
 
-      if (room.size >= 2) {
-        send(ws, { type: 'full' });
-        return;
-      }
-      room.add(ws);
+      rooms[roomName] ||= {};
+      const room = rooms[roomName];
+      const slot = occupySlot(room, ws, clientId);
+      if (!slot) { send(ws, { type: 'room-full' }); return; }
 
-      // 역할 배정: 첫 번째 입장 = polite(true), 두 번째 입장 = polite(false; offerer)
-      const polite = room.size === 1 ? true : false;
-      send(ws, { type: 'role', polite });
+      ws._room = roomName;
+      ws._slot = slot;
+      ws._clientId = clientId;
 
-      // 두 명이 되면 서로에게 시작 신호
-      if (room.size === 2) {
-        for (const peer of room) send(peer, { type: 'ready' });
+      // 역할 통지: a=impolite(첫 접속), b=polite(두 번째 접속)
+      send(ws, { type: 'role', slot, polite: slot === 'b' });
+
+      // 둘 다 존재하면 서로 준비 완료 알림
+      if (room.a?.ws && room.b?.ws) {
+        send(room.a.ws, { type: 'partner-ready' });
+        send(room.b.ws, { type: 'partner-ready' });
       }
       return;
     }
 
-    // 상대에게 그대로 릴레이(desc, candidate)
-    if (msg.type === 'desc' || msg.type === 'candidate') {
-      if (!roomId) return;
-      const room = ROOMS.get(roomId);
+    // 2) 시그널 중계 (서버는 최소한으로 전달만)
+    if (msg.type === 'signal') {
+      const room = rooms[ws._room];
       if (!room) return;
-      for (const peer of room) {
-        if (peer !== ws) send(peer, msg);
-      }
+      const partner = partnerOf(room, ws._slot);
+      if (!partner?.ws) return;
+      send(partner.ws, { type: 'signal', payload: msg.payload });
+      return;
     }
   });
 
   ws.on('close', () => {
-    if (!roomId) return;
-    const room = ROOMS.get(roomId);
+    const roomName = ws._room;
+    if (!roomName) return;
+    const room = rooms[roomName];
     if (!room) return;
-    room.delete(ws);
-    if (room.size === 0) ROOMS.delete(roomId);
-  });
-});
 
-const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.79';
-server.listen(PORT, HOST, () => {
-  console.log(`Server is running on http://${HOST}:${PORT}`);
+    if (room.a?.ws === ws) room.a = undefined;
+    if (room.b?.ws === ws) room.b = undefined;
+
+    // 파트너에게 파트너 이탈 통지
+    const partner = partnerOf(room, ws._slot);
+    if (partner?.ws) send(partner.ws, { type: 'partner-left' });
+
+    // 방 비면 정리
+    if (!room.a && !room.b) delete rooms[roomName];
+  });
 });
