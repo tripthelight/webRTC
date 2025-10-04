@@ -5,7 +5,7 @@
 const KEY = "refreshJob";
 const TOTAL = 100;
 const INTERVAL_MS = 100;
-const TARGET_TIME = "17:21:00"; // HH:mm:ss (로컬 시간 기준)
+const TARGET_TIME = "16:37:00"; // HH:mm:ss (로컬 시간 기준)
 
 const read = () => {
   try { return JSON.parse(localStorage.getItem(KEY) || "null"); }
