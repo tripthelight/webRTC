@@ -15,88 +15,85 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '220.71.2.120';
+const HOST = process.env.RTC_HOST || '220.71.2.152';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
 
-const ROOMS = new Map(); // roomId -> Set<ws>
+const ROOMS = new Map(); // roomId -> { a: WebSocket|null, b: WebSocket|null }
 
 function getRoom(roomId) {
-  if (!ROOMS.has(roomId)) ROOMS.set(roomId, new Set());
+  if (!ROOMS.has(roomId)) ROOMS.set(roomId, { a: null, b: null });
   return ROOMS.get(roomId);
 }
 
-function broadcastToRoom(roomId, from, data) {
-  const room = getRoom(roomId);
-  for (const client of room) {
-    if (client !== from && client.readyState === 1) {
-      client.send(JSON.stringify(data));
-    }
-  }
+function send(ws, msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-wss.on('connection', (ws) => {
-  ws.id = randomUUID();
-  ws.roomId = null;
+// 하트비트 유틸
+function heartbeat() { this.isAlive = true; };
 
-  ws.on('message', (raw) => {
-    let msg; try { msg = JSON.parse(raw); } catch { return; }
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', heartbeat);
+
+  ws.on('message', (buf) => {
+    let msg;
+    try { msg = JSON.parse(buf); } catch { return; }
 
     if (msg.type === 'join') {
-      const room = getRoom(msg.roomId);
-      if (room.size >= 2) {
-        ws.send(JSON.stringify({ type: 'room_full' }));
-        return;
-      }
-      ws.roomId = msg.roomId;
-      room.add(ws);
+      const { roomId } = msg;
+      ws._roomId = roomId;
+      const room = getRoom(roomId);
 
-      // 역할 배정: 먼저 들어온 1명 = impolite(false), 두 번째 = polite(true)
-      const peers = Array.from(room);
-      const roles = peers.map((peer, idx) => ({
-        id: peer.id,
-        polite: (idx === 1) // 두 번째 입장자만 polite: true
-      }));
-
-      // 각자에게 본인 역할 통지
-      for (const peer of peers) {
-        const me = roles.find(r => r.id === peer.id);
-        peer.send(JSON.stringify({
-          type: 'role',
-          polite: me.polite,
-          peers: roles
-        }));
+      // 슬롯 채우기 (a 먼저, 그다음 b). 죽은 소켓은 정리.
+      if (!room.a || room.a.readyState !== WebSocket.OPEN) {
+        if (room.a && room.a !== ws) { try { room.a.close(); } catch {} }
+        room.a = ws;
+      } else if (!room.b || room.b.readyState !== WebSocket.OPEN) {
+        if (room.b && room.b !== ws) { try { room.b.close(); } catch {} }
+        room.b = ws;
+      } else {
+        // 이미 2명 찼으면 가장 오래된 a를 새로 교체 (2인 전용 단순화)
+        try { room.a.close(); } catch {}
+        room.a = ws; room.b = null;
       }
 
-      // 2명 찼음을 상대에게 알림(간단한 상태 알림용)
-      broadcastToRoom(ws.roomId, null, { type: 'peer_count', count: room.size });
-      return;
-    }
+      // 역할 통지: a=polite(대기), b=impolite(offer 시작)
+      const a = room.a, b = room.b;
+      send(a, { type: 'role', isPolite: true,  shouldOffer: false, peerReady: !!b });
+      send(b, { type: 'role', isPolite: false, shouldOffer: true,  peerReady: !!a });
 
-    // 단순 릴레이 (sdp/ice 교환)
-    if (ws.roomId && (msg.type === 'signal')) {
-      broadcastToRoom(ws.roomId, ws, { type: 'signal', from: ws.id, payload: msg.payload });
-    }
-
-    if (msg.type === 'leaving') {
-      if (ws.roomId) {
-        const room = getRoom(ws.roomId);
-        room.delete(ws);
-        broadcastToRoom(ws.roomId, null, { type: 'peer_left', id: ws.id, count: room.size });
-        if (room.size === 0) ROOMS.delete(ws.roomId);
-      }
-      try { ws.close(); } catch {}
-      return;
+    } else if (msg.type === 'signal') {
+      const room = ROOMS.get(ws._roomId);
+      if (!room) return;
+      const peer = (room.a === ws) ? room.b : room.a;
+      send(peer, { type: 'signal', payload: msg.payload });
     }
   });
 
   ws.on('close', () => {
-    if (ws.roomId) {
-      const room = getRoom(ws.roomId);
-      room.delete(ws);
-      broadcastToRoom(ws.roomId, null, { type: 'peer_left', id: ws.id, count: room.size });
-      if (room.size === 0) ROOMS.delete(ws.roomId);
-    }
+    const room = ROOMS.get(ws._roomId);
+    if (!room) return;
+    if (room.a === ws) room.a = null;
+    if (room.b === ws) room.b = null;
+    const other = room.a || room.b;
+    if (other) send(other, { type: 'peer-left' });
+    if (!room.a && !room.b) ROOMS.delete(ws._roomId);
   });
 });
+
+// [추가] 주기적으로 ping → pong 안 오는 소켓 정리
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      try { ws.terminate(); } catch {}
+      return;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  });
+}, 15000);
+
+wss.on('close', () => clearInterval(interval));
