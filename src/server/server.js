@@ -20,80 +20,80 @@ server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
 
-const ROOMS = new Map(); // roomId -> { a: WebSocket|null, b: WebSocket|null }
+// --- 추가: 방 상태(A/B 두 칸) ---
+const rooms = new Map(); // roomId -> { A?: ws, B?: ws }
 
-function getRoom(roomId) {
-  if (!ROOMS.has(roomId)) ROOMS.set(roomId, { a: null, b: null });
-  return ROOMS.get(roomId);
+function safeSend(ws, data) {
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));
 }
 
-function send(ws, msg) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-}
+// 새 클라이언트가 붙으면 "connection" 이벤트 발생
+wss.on("connection", (ws, req) => {
+  const ip = req.socket.remoteAdress; // 접속한 클라이언트 IP
+  console.log("연결됨:", ip);
 
-// 하트비트 유틸
-function heartbeat() { this.isAlive = true; };
+  // --- 추가: 이 소켓이 어느 방/어느 칸에 앉았는지 저장 ---
+  ws.meta = { roomId: null, slot: null };
 
-wss.on('connection', (ws) => {
-  ws.isAlive = true;
-  ws.on('pong', heartbeat);
+  // --- 추가: 클라이언트가 보낸 메시지 처리 (join만) ---
+  ws.on('message', (raw) => {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type !== 'join') return;
 
-  ws.on('message', (buf) => {
-    let msg;
-    try { msg = JSON.parse(buf); } catch { return; }
+    const { roomId } = msg;
+    if (!roomId) return;
 
-    if (msg.type === 'join') {
-      const { roomId } = msg;
-      ws._roomId = roomId;
-      const room = getRoom(roomId);
+    let room = rooms.get(roomId);
+    if (!room) { room = {}; rooms.set(roomId, room); }
 
-      // 슬롯 채우기 (a 먼저, 그다음 b). 죽은 소켓은 정리.
-      if (!room.a || room.a.readyState !== WebSocket.OPEN) {
-        if (room.a && room.a !== ws) { try { room.a.close(); } catch {} }
-        room.a = ws;
-      } else if (!room.b || room.b.readyState !== WebSocket.OPEN) {
-        if (room.b && room.b !== ws) { try { room.b.close(); } catch {} }
-        room.b = ws;
-      } else {
-        // 이미 2명 찼으면 가장 오래된 a를 새로 교체 (2인 전용 단순화)
-        try { room.a.close(); } catch {}
-        room.a = ws; room.b = null;
-      }
-
-      // 역할 통지: a=polite(대기), b=impolite(offer 시작)
-      const a = room.a, b = room.b;
-      send(a, { type: 'role', isPolite: true,  shouldOffer: false, peerReady: !!b });
-      send(b, { type: 'role', isPolite: false, shouldOffer: true,  peerReady: !!a });
-
-    } else if (msg.type === 'signal') {
-      const room = ROOMS.get(ws._roomId);
-      if (!room) return;
-      const peer = (room.a === ws) ? room.b : room.a;
-      send(peer, { type: 'signal', payload: msg.payload });
-    }
-  });
-
-  ws.on('close', () => {
-    const room = ROOMS.get(ws._roomId);
-    if (!room) return;
-    if (room.a === ws) room.a = null;
-    if (room.b === ws) room.b = null;
-    const other = room.a || room.b;
-    if (other) send(other, { type: 'peer-left' });
-    if (!room.a && !room.b) ROOMS.delete(ws._roomId);
-  });
-});
-
-// [추가] 주기적으로 ping → pong 안 오는 소켓 정리
-const interval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
-      try { ws.terminate(); } catch {}
+    // A가 비었으면 A에 앉히고 "대기 중"이라고만 알려줌
+    if (!room.A) {
+      room.A = ws;
+      ws.meta = { roomId, slot: 'A' };
+      safeSend(ws, { type: 'joined', slot: 'A', waiting: true });
       return;
     }
-    ws.isAlive = false;
-    try { ws.ping(); } catch {}
-  });
-}, 15000);
 
-wss.on('close', () => clearInterval(interval));
+    // B가 비었으면 B에 앉힘 (이 시점엔 아직 역할/SDP 없음)
+    if (!room.B) {
+      room.B = ws;
+      ws.meta = { roomId, slot: 'B' };
+      safeSend(ws, { type: 'joined', slot: 'B', waiting: false });
+
+      // === [추가 ①] 두 명이 모였으니, 역할(role)만 양쪽에 통지 ===
+      // 규칙(세션 동안만 유효):
+      //  - A: polite=true,  isStarter=false  (대기: offer 안 만듦)
+      //  - B: polite=false, isStarter=true   (시작: offer 만들 주체)
+      const a = room.A;
+      const b = room.B;
+      safeSend(a, {
+        type: 'role',
+        you:  { slot: 'A', polite: true,  isStarter: false },
+        peer: { slot: 'B', polite: false, isStarter: true  }
+      });
+      safeSend(b, {
+        type: 'role',
+        you:  { slot: 'B', polite: false, isStarter: true  },
+        peer: { slot: 'A', polite: true,  isStarter: false }
+      });
+      // === [추가 ①] 끝 ===
+
+      return;
+    }
+
+    // 둘 다 차면 거절
+    safeSend(ws, { type: 'full' });
+  });
+
+  // 브라우저 탭이 닫히거나 새로고침하면 close 발생
+  ws.on('close', () => {
+    console.log('🚪 종료됨:', ip);
+    // --- 추가: 자리를 비워 줌(깨끗하게) ---
+    const { roomId, slot } = ws.meta || {};
+    const room = roomId && rooms.get(roomId);
+    if (!room) return;
+    if (slot === 'A' && room.A === ws) room.A = undefined;
+    if (slot === 'B' && room.B === ws) room.B = undefined;
+    if (!room.A && !room.B) rooms.delete(roomId);
+  });
+});
