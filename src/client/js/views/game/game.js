@@ -32,6 +32,8 @@ function log(...args) {
 function uuid() {
   return (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
+// === [추가] 작은 랜덤 유틸 ===
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
 // ======== 상태 변수 ========
 let ws;                 // 시그널링용 WebSocket
@@ -50,6 +52,127 @@ let makingOffer = false;
 let ignoreOffer = false;
 let isSettingRemoteAnswerPending = false;
 
+// === [추가] 안전한 재협상 큐 ===
+// 여러 이벤트가 몰려도 한 번에 setLocalDescription 하도록 직렬화/디바운스합니다.
+let negotiateQueued = false;
+async function negotiateSafely(options = {}) {
+  if (!pc) return;
+  if (negotiateQueued) return; // 이미 예약됨
+
+  queueMicrotask(async () => {
+    negotiateQueued = false;
+    try {
+      makingOffer = true;
+      log('[negotiation] safe-offer start', options);
+      const offer = await pc.createOffer(options); // options.iceRestart 지원
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: 'description', description: pc.localDescription });
+      log('[negotiation] safe-offer done');
+    } catch (e) {
+      log('[negotiation] safe-offer error', e?.message || e);
+    } finally {
+      makingOffer = false;
+    }
+  });
+}
+
+// === [추가] ICE Restart 스케줄러 ===
+let iceRestartTimer = null;
+function canOffer() {
+  // 서버가 '두 번째 입장자 = offerer'를 주도하지만,
+  // 글레어를 피하기 위해 여기서는 'offerer 이거나 polite'일 때만 우리가 오퍼를 시도
+  return !!pc && (iAmOfferer || polite);
+}
+function maybeScheduleIceRestart() {
+  if (!canOffer()) return;
+  if (!canIceRestartNow()) { log('[ice-restart] rate-limited'); return; } // [추가]
+  if (iceRestartTimer) return;
+
+  iceRestartTimer = setTimeout(async () => {
+    iceRestartTimer = null;
+    if (!pc) return;
+    if (ws?.readyState !== WebSocket.OPEN) { log('[ice-restart] skipped: WS not ready'); return; }
+    iceRestartTimes.push(Date.now()); // [추가] 실제 시도 시점 기록
+    log('[ice-restart] trying');
+    await negotiateSafely({ iceRestart: true });
+  }, 400); // 300~800ms 범위 내에서 환경에 맞게 조절 가능
+}
+
+// === [추가] WS 재연결 상태 ===
+let wsRetryCount = 0;
+let wsReconnectTimer = null;
+
+function jitter(ms) {
+  // 0.7~1.3배 사이 무작위 지터
+  const j = 0.3 * ms;
+  return Math.floor(ms + (Math.random() * (2*j) - j));
+}
+
+function scheduleWsReconnect() {
+  if (wsReconnectTimer) return;
+  // 아주 작은 지수 백오프 (최대 3초), 새로고침 난타 시 서버 부하 최소화
+  const base = Math.min(3000, 300 * Math.pow(1.7, wsRetryCount++));
+  const delay = jitter(base);
+  log(`[WS] reconnect in ${delay}ms`);
+  wsReconnectTimer = setTimeout(async () => {
+    wsReconnectTimer = null;
+    try {
+      await connectSignaling(); // 재연결 시도
+      wsRetryCount = 0;         // 성공하면 초기화
+      // 재연결 직후, 연결이 불안정하면 ICE Restart 1회 시도 (offer 가능한 경우)
+      if (pc && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
+        maybeScheduleIceRestart();
+      }
+    } catch {
+      // 실패해도 scheduleWsReconnect가 재호출됨
+    }
+  }, delay);
+}
+
+// === [추가] Offerer 시작 지연으로 글레어 감쇠 ===
+let offererStartTimer = null;
+function startAsOffererWithJitter() {
+  if (!pc) return;
+  if (offererStartTimer) return;
+  const delay = randInt(120, 320); // 120~320ms 사이 지연
+  log(`[offerer] start after ${delay}ms`);
+  offererStartTimer = setTimeout(() => {
+    offererStartTimer = null;
+    if (!pc) return;
+    // 이미 채널이 있으면 생략
+    if (dc && dc.readyState !== 'closed') {
+      log('[offerer] skip: dc already exists');
+      return;
+    }
+    try {
+      dc = pc.createDataChannel('chat'); // 이 순간 onnegotiationneeded 트리거
+      wireDataChannel('outbound(createDataChannel, jittered)');
+    } catch (e) {
+      log('[offerer] createDataChannel error', e?.message || e);
+    }
+  }, delay);
+}
+
+// === [추가] ICE Restart 빈도 제한 ===
+const ICE_RESTART_WINDOW_MS = 10000; // 10초
+const ICE_RESTART_MAX = 2;           // 10초에 최대 2회
+let iceRestartTimes = [];
+function canIceRestartNow() {
+  const now = Date.now();
+  iceRestartTimes = iceRestartTimes.filter(t => now - t < ICE_RESTART_WINDOW_MS);
+  return iceRestartTimes.length < ICE_RESTART_MAX;
+}
+
+// === [추가] 게임 상태 재수화(샘플 스텁)
+// 실제 게임에서는 여기서 현재 라운드/점수/남은 시간/준비 상태 등을
+// DataChannel로 주고받고, 수신 시 화면을 다시 그리세요.
+function rehydrateGameState(peerId) {
+  log('[rehydrate] run with peerId =', peerId);
+  // 예시:
+  // dc.send(JSON.stringify({ t: 'STATE', payload: yourCurrentGameState }));
+  // 수신측 onmessage에서 t==='STATE'이면 UI를 해당 상태로 재구성
+}
+
 // ======== 시그널링 WebSocket 연결 ========
 function connectSignaling() {
   return new Promise((resolve, reject) => {
@@ -57,9 +180,9 @@ function connectSignaling() {
 
     ws.onopen = () => {
       log('[WS] opened');
-      // 방에 참여 요청. 서버는 첫 번째/두 번째에 따라 역할(role) 메시지를 내려줌.
+      wsRetryCount = 0; // 성공했으니 카운터 리셋
       ws.send(JSON.stringify({ type: 'join', roomId: ROOM_ID, clientId }));
-      resolve();
+      // 역할 수신 후 ensurePeerConnection() 호출 흐름은 동일
     };
 
     ws.onmessage = async (ev) => {
@@ -110,12 +233,14 @@ function connectSignaling() {
 
     ws.onerror = (e) => {
       log('[WS] error', e.message || e);
-      reject(e);
+      // 즉시 재연결 스케줄 (중복 방지)
+      scheduleWsReconnect();
     };
 
     ws.onclose = () => {
       log('[WS] closed');
-      // 필요 시 재연결 로직을 넣을 수 있으나, STEP1에서는 페이지 새로고침으로 대체
+      // 재연결 스케줄 (중복 방지)
+      scheduleWsReconnect();
     };
   });
 }
@@ -132,17 +257,10 @@ function ensurePeerConnection() {
   // (핵심) onnegotiationneeded: 로컬의 "협상 필요" 이벤트 발생 시,
   // offer를 만들고 setLocalDescription -> 상대에게 SDP 전송
   pc.onnegotiationneeded = async () => {
-    try {
-      makingOffer = true;
-      log('[negotiation] need -> createOffer');
-      await pc.setLocalDescription(await pc.createOffer());
-      sendSignal({ type: 'description', description: pc.localDescription });
-    } catch (e) {
-      log('[negotiation] error', e?.message || e);
-    } finally {
-      makingOffer = false;
-    }
-  };
+  log('[negotiation] need');
+  // 안전 큐를 통해 단일 offer로 수렴
+  await negotiateSafely();
+};
 
   // ICE 후보 발견 시 상대에게 전달
   pc.onicecandidate = ({ candidate }) => {
@@ -151,7 +269,12 @@ function ensurePeerConnection() {
 
   pc.onconnectionstatechange = () => {
     log('[pc.state]', pc.connectionState);
-    // disconnected/failed 시 다음 단계에서 재시도 정책을 더 보강할 수 있습니다.
+
+    // 연결이 끊어졌거나 실패한 경우, 우리가 오퍼 가능한 쪽이면(offerer 또는 polite),
+    // 과도한 재시도를 막기 위해 짧은 쿨다운 후 ICE Restart를 1회 시도합니다.
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      maybeScheduleIceRestart();
+    }
   };
 
   // 상대가 만든 DataChannel을 수신(우리는 "첫 번째"일 때 채널을 만들지 않음)
@@ -162,8 +285,7 @@ function ensurePeerConnection() {
 
   // 내가 두 번째(offerer)이면, 입장 즉시 DataChannel을 하나 만들어 협상을 유도
   if (iAmOfferer) {
-    dc = pc.createDataChannel('chat');
-    wireDataChannel('outbound(createDataChannel)');
+    startAsOffererWithJitter();
   }
 }
 
@@ -171,9 +293,50 @@ function wireDataChannel(hint) {
   if (!dc) return;
 
   log(`[dc] wired (${hint})`);
-  dc.onopen = () => log('[dc] open');
-  dc.onclose = () => log('[dc] close');
-  dc.onmessage = (ev) => log('[dc] recv:', ev.data);
+  dc.onopen = () => {
+    log('[dc] open');
+    // [추가] 채널 열리면 간단한 헬로 핸드셰이크 전송
+    try { dc.send(JSON.stringify({ t: 'HELLO', from: clientId })); } catch {}
+  };
+
+  dc.onclose = () => {
+    log('[dc] close');
+    // (STEP 2에서 추가했던 재생성 로직 유지)
+    if (iAmOfferer && pc && (pc.connectionState === 'connected' || pc.connectionState === 'connecting')) {
+      setTimeout(() => {
+        if (!pc) return;
+        if (!dc || dc.readyState === 'closed') {
+          try {
+            dc = pc.createDataChannel('chat');
+            wireDataChannel('recreate(after close)');
+          } catch (e) {
+            log('[dc] recreate error', e?.message || e);
+          }
+        }
+      }, 300);
+    }
+  };
+
+  dc.onmessage = (ev) => {
+    // [변경] 간단한 프로토콜(JSON 시도 → 실패 시 원문 로그)
+    try {
+      const data = JSON.parse(ev.data);
+      if (data?.t === 'HELLO') {
+        log('[dc] HELLO from', data.from);
+        try { dc.send(JSON.stringify({ t: 'HELLO-ACK', from: clientId })); } catch {}
+        rehydrateGameState(data.from); // 상태 재수화 트리거
+        return;
+      }
+      if (data?.t === 'HELLO-ACK') {
+        log('[dc] HELLO-ACK from', data.from);
+        rehydrateGameState(data.from); // 상태 재수화 트리거
+        return;
+      }
+    } catch {
+      // JSON 아니면 기존대로 바로 출력
+    }
+    log('[dc] recv:', ev.data);
+  };
 }
 
 // 원격 SDP 처리 (Perfect Negotiation 정석 패턴)
@@ -224,6 +387,10 @@ async function onRemoteDescription(description) {
 function sendSignal(payload) {
   if (ws && ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ roomId: ROOM_ID, clientId, ...payload }));
+  } else {
+    // WS가 아직 준비되지 않았다면 그냥 건너뜁니다(서버 부하 최소화).
+    // 필요한 경우 WS 재연결 후 onconnectionstatechange에서 ICE Restart가 보완합니다.
+    log('[signal] skipped (WS not open)', payload?.type);
   }
 }
 
