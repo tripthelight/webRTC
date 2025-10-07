@@ -1,12 +1,27 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GAME</title>
+
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; line-height: 1.5; }
+    pre { background: #111; color: #ddd; padding: 12px; border-radius: 8px; overflow: auto; }
+    .row { display: flex; gap: 8px; margin-top: 8px; }
+    input { flex: 1; padding: 8px; }
+    button { padding: 8px 12px; }
+  </style>
 </head>
 <body>
-  <h1>STEP 1-α: 고정 clientId + roomId 파싱</h1>
-  <div id="log"></div>
+  <h1>WebRTC 2인용(STEP1) — 두 번째 입장자가 Offer</h1>
+
+  <div class="row">
+    <input id="text" placeholder="전송할 텍스트..." />
+    <button id="sendBtn">보내기</button>
+  </div>
+
+  <h3>로그</h3>
+  <pre id="log"></pre>
 </body>
 </html>
