@@ -1,253 +1,226 @@
-let pc = null;
-let dc = null;
+// ----- WebSocket signaling -----
+const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
+// const ws = new WebSocket(WS_URL);
 
-// signaling 송신 함수
-let sendSignal = null;
+// ------------------------------------------------------------
+// 이 파일은 "한 방(room)에 2명"만 들어와 데이터채널로 텍스트를 주고받는
+// 최소 뼈대를 제공합니다.
+// - Perfect Negotiation 패턴의 핵심 변수들(makingOffer, ignoreOffer, polite)을 포함
+// - 두 번째 입장자가 dataChannel을 만들어 offer를 촉발
+// - 충돌(동시에 offer 만드는 상황) 방지 로직을 간단/안전하게 구현
+// ------------------------------------------------------------
 
-// perfect negotiation용 상태
-let isPolite = false; // 내 역할
-let remoteId = null; // 상대 id(처음 받은 메시지에서 확정)
-let isSettingRemoteAnswerPending = false;
-let localId = null; // ★ 이번 단계: 내 id 주입용
-// --- Heartbeat 상태 ---
-let hbTimer = null;
-let hbWatchdog = null;
-let lastPongAt = 0;
-const HEARTBEAT_INTERVAL_MS = 5000; // 5초마다 ping
-const HEARTBEAT_TIMEOUT_MS  = 12000; // 12초 내 pong 없으면 ICE 재시작
+// ------------------------------------------------------------
+// 변경 요약:
+// - isSettingRemoteAnswerPending 도입 (MDN Perfect Negotiation 패턴 보강)  // [NEW]
+// - impolite 쪽의 createDataChannel 시 아주 짧은 랜덤 지연 50~150ms         // [NEW]
+// - onnegotiationneeded 가드: 원격 Answer 세팅 중이면 내 오퍼 생성 금지     // [NEW]
+// - 나머지는 서버 비용을 늘리지 않는 범위에서만 수정
+// ------------------------------------------------------------
 
-const $ = (sel) => document.querySelector(sel);
-const log = (msg) => {
-  const el = $('#log');
-  el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-  el.scrollTop = el.scrollHeight;
+
+
+// 일반 공개 STUN 서버(구글). 실제 서비스에선 TURN도 필요할 수 있습니다.
+const RTC_CONFIG = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 
-export function setSignaling(sendFn) {
-  sendSignal = sendFn;
-}
+export async function joinRoom(roomId, {
+  onConnected = () => {},
+  onMessage = (text) => { console.log('[DC message]', text); },
+  onLog = (msg) => { console.log('[RTC]', msg); },
+} = {}) {
 
-// ★ 내 id를 주입 받아서, 상대 id를 처음 볼 때 역할을 '명확하게' 결정
-export function setLocalId(id) {
-  localId = String(id);
-}
+  // 1) 시그널링(WebSocket) 연결
+  const ws = new WebSocket(WS_URL);
 
-// 브라우저 기본 STUN 만으로는 외부 네트워크에서 안 잡힐 수 있어, 공개 STUN 1개 추가
-function makePeer() {
-  return new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  });
-}
+  // WebRTC 상태 보관 변수들
+  let pc;                    // RTCPeerConnection
+  let dc;                    // DataChannel
+  let polite = true;         // 서버가 'role'로 내려줍니다. (첫 입장자: true, 두 번째: false)
+  let makingOffer = false;   // 내가 지금 offer를 "만드는 중"인가?
+  let ignoreOffer = false;   // (impolite일 때) 충돌 상황이면 상대 offer를 "무시"할지?
+  let isSettingRemoteAnswerPending = false; // 원격 Answer를 setRemoteDescription 중?
+  const pendingCandidates = [];// remoteDescription 전에 온 candidate를 잠시 보관
 
-export function createPeer() {
-  if (pc) return pc;
-
-  // 브라우저 기본 STUN 서버만 사용(아직 ICE 서버 지정 안 함)
-  pc = makePeer();
-
-  // Perfect Negotiation에서 자주 쓰는 보조 플래그들 (지금은 '보기만')
-  pc._makingOffer = false;
-  pc._ignoreOffer = false;
-
-  pc.onnegotiationneeded = async () => {
-    log('[rtc] onnegotiationneeded → (이번 단계) 내가 offer를 만듭니다');
-    if (!sendSignal) {
-      log('[rtc] sendSignal 미설정: ws 연결 먼저 해주세요');
-      return;
-    }
+  // 유틸: 안전하게 addIceCandidate (remote가 아직 없으면 큐에 적재)
+  async function safeAddIceCandidate(candidate) {
     try {
-      pc._makingOffer = true;
-      // stable일 때만 제안 시도(충돌 예방)
-      if (pc.signalingState !== 'stable') {
-        log('[rtc] signalingState!=stable → offer 생략');
+      if (pc.remoteDescription) {
+        await pc.addIceCandidate(candidate);
+      } else {
+        pendingCandidates.push(candidate);
+      }
+    } catch (err) {
+      onLog('addIceCandidate error: ' + err?.message);
+    }
+  }
+
+  function flushPendingCandidates() {
+    if (!pc.remoteDescription) return;
+    while (pendingCandidates.length) {
+      const c = pendingCandidates.shift();
+      pc.addIceCandidate(c).catch(err => onLog('flush candidate error: ' + err?.message));
+    }
+  }
+
+  // 2) RTCPeerConnection 생성 + 이벤트 바인딩
+  function makePeer(createDataChannelFirst = false) {
+    pc = new RTCPeerConnection(RTC_CONFIG);
+
+    // (필수) Perfect Negotiation 핵심 핸들러: onnegotiationneeded
+    pc.onnegotiationneeded = async () => {
+      // [NEW] 원격 Answer를 적용 중이면 내 오퍼 생성 금지 → glare 확률↓
+      if (isSettingRemoteAnswerPending) {
+        onLog('skip onnegotiationneeded (remote answer pending)'); // [NEW]
         return;
       }
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      // Trickling: 후속 ICE는 onicecandidate에서 따로 보냄
-      sendSignal({ kind: 'sdp', description: pc.localDescription });
-      log('[rtc] offer 보냄');
-    } catch (err) {
-      log(`[rtc] offer 실패: ${err.message ?? err}`);
-    } finally {
-      pc._makingOffer = false;
+
+      // 이 이벤트는 "내가 새로운 협상(offer)이 필요"할 때 자동 발생합니다.
+      // ex) 내가 먼저 dataChannel을 만들면, 여기로 들어오게 됩니다.
+      try {
+        onLog('onnegotiationneeded');
+        makingOffer = true;
+
+        // 나의 현 상태를 로컬SDP로 만들고
+        await pc.setLocalDescription(await pc.createOffer());
+        // 시그널 서버를 통해 상대에게 전달
+        ws.send(JSON.stringify({ type: 'description', description: pc.localDescription }));
+      } catch (err) {
+        onLog('onnegotiationneeded error: ' + err?.message);
+      } finally {
+        makingOffer = false;
+      }
+    };
+
+    // ICE 후보가 생길 때마다 서버로 전달
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) {
+        ws.send(JSON.stringify({ type: 'candidate', candidate: ev.candidate }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      onLog('iceConnectionState: ' + pc.iceConnectionState);
+      if (pc.iceConnectionState === 'connected') {
+        onConnected();
+      }
+    };
+
+    // 상대가 만든 DataChannel을 내가 "수신"하는 경우
+    pc.ondatachannel = (ev) => {
+      dc = ev.channel;
+      wireDataChannel(dc);
+      onLog('ondatachannel (recipient)');
+    };
+
+    // 이 사람이 "offer 유발자"라면, 먼저 채널을 하나 만들어 협상을 촉발합니다.
+    if (createDataChannelFirst) {
+      // [NEW] 아주 짧은 랜덤 지연으로 동시 새로고침 glare/서버부하를 자연스럽게 낮춤
+      const jitterMs = 50 + Math.floor(Math.random() * 100); // 50~150ms
+      setTimeout(() => {
+        dc = pc.createDataChannel('chat');
+        wireDataChannel(dc);
+        onLog(`createDataChannel (initiator) after ${jitterMs}ms jitter`);
+      }, jitterMs); // [NEW]
     }
-  };
-
-  // 상대가 보낸 dataChannel을 수락할 때 발생
-  pc.ondatachannel = (ev) => {
-    dc = ev.channel;
-    log('[rtc] ondatachannel (상대가 연 채널 수신)');
-    wireDataChannel(dc);
-  };
-
-  // ICE 상태 변화 관찰만 (네트워크 감을 익히기 위함)
-  pc.oniceconnectionstatechange = () => {
-    log(`[rtc] iceConnectionState=${pc.iceConnectionState}`);
-  };
-
-  pc.onconnectionstatechange = () => {
-    log(`[rtc] connectionState=${pc.connectionState}`);
-  };
-
-  // ★ ICE 후보 나올 때마다 신호로 전송
-  pc.onicecandidate = (ev) => {
-    if (ev.candidate && sendSignal) {
-      sendSignal({ kind: 'ice', candidate: ev.candidate });
-    }
-  };
-
-  return pc;
-}
-
-// 내가 먼저 여는 dataChannel (버튼 클릭 시 한 번만 생성)
-export function openMyDataChannel() {
-  if (!pc) createPeer();
-  if (dc && dc.readyState !== 'closed') {
-    log('[rtc] dataChannel already exists');
-    return dc;
   }
-  dc = pc.createDataChannel('chat');
-  log('[rtc] createDataChannel("chat") 호출됨 → 곧 onnegotiationneeded');
-  wireDataChannel(dc);
-  return dc;
-}
 
-function wireDataChannel(channel) {
-  channel.onopen = () => {
-    log('[rtc] dataChannel open');
-    startHeartbeat();
-  };
-  channel.onclose = () => {
-    log('[rtc] dataChannel close');
-    stopHeartbeat();
-  };
-  channel.onmessage = (ev) => {
-    const msg = String(ev.data ?? '');
-    // ping/pong 프로토콜 (아주 단순)
-    if (msg.startsWith('ping:')) {
-      // 상대가 보낸 ping → 즉시 pong으로 응답
-      channel.readyState === 'open' && channel.send(`pong:${msg.slice(5)}`);
-      return;
-    }
-    if (msg.startsWith('pong:')) {
-      lastPongAt = Date.now();
-      return;
-    }
-    log(`[rtc] dataChannel message: ${msg}`);
-  };
-}
-
-// --- Heartbeat 유틸 ---
-function startHeartbeat() {
-  stopHeartbeat(); // 중복 방지
-  lastPongAt = Date.now();
-  // 5초마다 ping
-  hbTimer = setInterval(() => {
-    if (!dc || dc.readyState !== 'open') return;
-    const ts = Date.now();
-    dc.send(`ping:${ts}`);
-  }, HEARTBEAT_INTERVAL_MS);
-  // pong 감시
-  hbWatchdog = setInterval(async () => {
-    const since = Date.now() - lastPongAt;
-    if (since > HEARTBEAT_TIMEOUT_MS) {
-      log(`[rtc] heartbeat 타임아웃(${since}ms) → ICE 재시작 시도`);
-      lastPongAt = Date.now(); // 중복 연속 트리거 방지
-      await safeIceRestart();
-    }
-  }, Math.min(HEARTBEAT_INTERVAL_MS, 2000)); // 2~5초 간격으로 점검
-}
-
-function stopHeartbeat() {
-  if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
-  if (hbWatchdog) { clearInterval(hbWatchdog); hbWatchdog = null; }
-}
-
-// --- 안전한 ICE 재시작(Perfect Negotiation 규칙과 호환) ---
-async function safeIceRestart() {
-  try {
-    if (!sendSignal || !pc) return;
-    if (pc.signalingState !== 'stable') {
-      log('[rtc] signalingState!=stable → ICE 재시작 보류');
-      return;
-    }
-    pc._makingOffer = true;
-    const offer = await pc.createOffer({ iceRestart: true });
-    await pc.setLocalDescription(offer);
-    sendSignal({ kind: 'sdp', description: pc.localDescription });
-    log('[rtc] ICE restart offer 보냄');
-  } catch (err) {
-    log(`[rtc] ICE 재시작 실패: ${err.message ?? err}`);
-  } finally {
-    pc._makingOffer = false;
+  // DataChannel에 메시지 핸들러 연결
+  function wireDataChannel(channel) {
+    channel.onopen = () => onLog('[DC] open');
+    channel.onclose = () => onLog('[DC] close');
+    channel.onmessage = (ev) => onMessage(String(ev.data));
   }
-}
 
-// ----- Perfect Negotiation 핵심 처리 -----
-export async function onSignalMessage(msg) {
-  if (!pc) createPeer();
-
-  // 상대 id를 처음 본 순간 역할 확정: "id 큰 쪽이 polite"
-  if (!remoteId && msg.from) {
-    remoteId = msg.from;
-    // ★ 이제는 양쪽이 동일 규칙으로 결정: "문자열 비교로 더 큰 쪽이 polite"
-    //    (양측 모두 동일한 setLocalId 호출로 일관성 확보)
-    if (localId) {
-      // 문자열 비교: 예) 'a3f' > '9bc' 는 true (사전식 비교)
-      isPolite = String(localId) > String(remoteId);
+  // 외부에서 쓸 수 있도록 간단 전송 API도 같이 내보냅니다.
+  function send(text) {
+    if (dc && dc.readyState === 'open') {
+      dc.send(text);
     } else {
-      // 혹시라도 주입이 늦었다면, 이전 단계와 동일하게 보수적 시작
-      isPolite = false;
+      onLog('DataChannel not open');
     }
-    log(`[rtc] localId=${localId}, remoteId=${remoteId}, isPolite=${isPolite}`);
   }
 
-  if (msg.kind === 'sdp') {
-    const desc = msg.description;
-    try {
-      const readyForOffer = !pc._makingOffer && (pc.signalingState === 'stable' || isSettingRemoteAnswerPending);
-      const offerCollision = desc.type === 'offer' && !readyForOffer;
+  // 3) 시그널링(WebSocket) 메시지 수신 처리
+  ws.onopen = () => {
+    // 방 참가
+    ws.send(JSON.stringify({ type: 'join', room: roomId }));
+  };
 
-      // 충돌이면: impolite는 무시, polite는 rollback 후 수용
-      pc._ignoreOffer = !isPolite && offerCollision;
+  ws.onmessage = async (ev) => {
+    let msg = {};
+    try { msg = JSON.parse(ev.data); } catch { return; }
 
-      if (pc._ignoreOffer) {
-        log('[rtc] (impolite) 충돌 offer 무시');
+    // (A) 서버가 내려주는 "역할" 통지
+    if (msg.type === 'role') {
+      polite = !!msg.polite;
+      // 두 번째 입장자는 createDataChannel=true => 먼저 DataChannel을 만들어 offer를 유발
+      makePeer(!!msg.createDataChannel);
+      return;
+    }
+
+    // (B) 상대의 SDP(offer/answer) 수신
+    if (msg.type === 'description' && msg.description) {
+      const desc = msg.description;
+
+      const readyForOffer = pc.signalingState === 'stable' || (pc.signalingState === 'have-local-offer' && !makingOffer);
+      const offerCollision = desc.type === 'offer' && (makingOffer || pc.signalingState !== "stable");
+
+      // 충돌 처리 규칙:
+      // - impolite(false): 충돌이면 "상대 offer 무시"
+      // - polite(true): 충돌이면 "내 것 롤백" 후 상대 offer 수용
+      ignoreOffer = !polite && offerCollision;
+      if (ignoreOffer) {
+        // 무시(impolite 쪽이 이미 오퍼 만드는 중이라면, 내 오퍼를 계속 진행)
+        onLog('offer ignored (impolite & collision)');
         return;
       }
 
-      if (offerCollision && isPolite) {
-        log('[rtc] (polite) 충돌 발생 → rollback 후 상대 offer 수락');
-        await pc.setLocalDescription({ type: 'rollback' });
+      try {
+        if (offerCollision) {
+          // polite인 경우: 내 로컬 오퍼를 롤백하여 충돌을 해소
+          await pc.setLocalDescription({ type: 'rollback' });
+        }
+
+        if (desc.type === "answer") {
+          // 원격 answer를 세팅할 동안은 onnegotiationneeded를 막고 싶다
+          isSettingRemoteAnswerPending = true;
+          await pc.setRemoteDescription(desc);
+          isSettingRemoteAnswerPending = false;
+          flushPendingCandidates();
+          return;
+        }
+
+        if (desc.type === 'offer') {
+          await pc.setRemoteDescription(desc);
+          flushPendingCandidates();
+          await pc.setLocalDescription(await pc.createAnswer());
+          ws.send(JSON.stringify({ type: 'description', description: pc.localDescription }));
+          return;
+        }
+      } catch (err) {
+        onLog('description handling error: ' + err?.message);
       }
-
-      isSettingRemoteAnswerPending = desc.type === 'answer';
-      await pc.setRemoteDescription(desc);
-      isSettingRemoteAnswerPending = false;
-
-      if (desc.type === 'offer') {
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        sendSignal && sendSignal({ kind: 'sdp', description: pc.localDescription });
-        log('[rtc] (polite/impolite 공통) offer 수락 -> answer 보냄');
-      } else if (desc.type === 'answer') {
-        log('[rtc] answer 수신 처리 완료');
-      }
-    } catch (err) {
-      log(`[rtc] sdp 처리 실패: ${err.message ?? err}`);
+      return;
     }
-    return;
-  }
 
-  if (msg.kind === 'ice' && msg.candidate) {
-    try {
-      await pc.addIceCandidate(msg.candidate);
-      // 일부 브라우저는 연결 중간에도 후보가 계속 들어옵니다.
-    } catch (err) {
-      // 연결이 아직 준비 전이면 addIceCandidate 실패할 수 있음 (무해)
-      log(`[rtc] addIceCandidate 경고: ${err.message ?? err}`);
+    // (C) 상대 ICE 후보 수신
+    if (msg.type === 'candidate' && msg.candidate) {
+      await safeAddIceCandidate(msg.candidate);
+      return;
     }
-    return;
-  }
+  };
+
+  ws.onclose = () => {
+    // 이 단계에서는 단순 로그만 남깁니다.
+    // 다음 단계에서 "새로고침에 강한 재연결"과 "서버 작업 최소화"를 더 단단히 만들겠습니다.
+    console.log('[WS] closed');
+  };
+
+  // 외부에서 쓸 수 있게 간단한 인터페이스 반환
+  return {
+    send,                       // 데이터채널로 문자열 전송
+    get pc() { return pc; },    // 필요 시 디버깅용
+  };
 }

@@ -27,6 +27,7 @@
 - 두 peer가 webRTC로 연결된 후, 둘 중에 한 Peer가 새로고침 하면, 다시 재연결 되어야 한다.
 - 두 peer가 webRTC로 연결된 후, 두 peer가 새로고침(F5)를 서로 난타해도, 다시 재연결 되어야 한다.
 - 두 peer가 webRTC로 연결된 후, 브라우저에서 새로고침 할 때 마다, signaling서버에 재연결을 위한 요청 비용이 발생하므로, 새로고침 시 signaling 서버의 Task는 최소화 시켜야 한다.
+- signaling server에서 두 peer가 한 room에 메칭되면, 그 다음 접속한 peer는 새로운 room에 배정받아야 한다.
 - 내가 webRTC를 잘 모르니까, 모든 코드에 아주 쉽고 자세한 주석을 꼭 첨부해라!
 
 
