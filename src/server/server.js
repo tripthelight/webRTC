@@ -20,120 +20,97 @@ server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
 
-// 아주 얇은 WebSocket 시그널링 서버
-// - 방(room)마다 최대 2명만 허용
-// - 두 사람이 들어오면 "누가 initiator(처음 offer 보낼 사람)인지"와 "polite 여부"를 각자에게 알려줍니다
-// - 재접속(F5) 시 같은 clientId로 다시 join하면 기존 엔트리를 교체(최소 작업)합니다.
+// 방 상태 메모리 (간단한 in-memory. 실제 배포에선 Redis 등으로 옮길 수 있음)
+const ROOMS = new Map();
+// ROOMS 구조 예시:
+// ROOMS.set('room-1', {
+//   clients: new Set([wsA, wsB]),
+//   // 추가 메타 없고, 배정 순서로 polite / impolite(=caller) 결정
+// });
 
-// 2) 방 상태: Map<roomName, Map<clientId, { ws, firstJoinAt, lastSeenAt }>>
-const rooms = new Map();
-
-// 유틸: 안전 전송(예외 무시)
-const send = (ws, obj) => {
-  try { ws.send(JSON.stringify(obj)); } catch {}
-};
-
-// 방 가져오기(없으면 생성)
-function getOrCreateRoom(roomName) {
-  if (!rooms.has(roomName)) rooms.set(roomName, new Map());
-  return rooms.get(roomName);
+function getOrCreateWaitingRoom() {
+  // 아직 2명이 안 찬 방을 찾고, 없으면 새로 만듦
+  for (const [roomId, info] of ROOMS.entries()) {
+    if (info.clients.size < 2) return roomId;
+  }
+  // 새 방 생성
+  const roomId = `room-${Math.random().toString(36).slice(2, 8)}`;
+  ROOMS.set(roomId, { clients: new Set() });
+  return roomId;
 }
 
-// 현재 방의 구성원으로 역할 계산
-// - 먼저 들어온 사람(slot 1) = 대기
-// - 나중에 들어온 사람(slot 2) = initiator (첫 offer 보낼 사람), polite = true
-function computeRoles(roomMap) {
-  const list = [...roomMap.entries()].map(([clientId, info]) => ({ clientId, ...info }));
-  // 최초 입장 시간 기준 정렬(오래된=먼저 입장)
-  list.sort((a, b) => a.firstJoinAt - b.firstJoinAt);
-
-  return list.map((ent, idx) => {
-    const slot = idx + 1;                 // 1 또는 2
-    const initiator = slot === 2;         // "두 번째 입장자"가 offer 시작 주체
-    const polite = slot === 2;            // Perfect Negotiation에서 충돌 시 더 '양보'하는 쪽
-    return { clientId: ent.clientId, slot, initiator, polite };
-  });
+function getRoomOfClient(ws) {
+  for (const [roomId, info] of ROOMS.entries()) {
+    if (info.clients.has(ws)) return roomId;
+  }
+  return null;
 }
 
-// 두 클라이언트에게 각자 역할 통지
-function notifyRoles(roomName) {
-  const room = rooms.get(roomName);
-  if (!room) return;
-  const roles = computeRoles(room);
-  roles.forEach((role) => {
-    const you = room.get(role.clientId);
-    if (!you) return;
-    const peer = roles.find(r => r.clientId !== role.clientId) || null;
-    send(you.ws, { type: 'roles', room: roomName, you: role, peer });
-  });
+function broadcastToRoom(roomId, payload, exceptWs = null) {
+  const info = ROOMS.get(roomId);
+  if (!info) return;
+  for (const client of info.clients) {
+    if (client !== exceptWs && client.readyState === 1 /* OPEN */) {
+      client.send(JSON.stringify(payload));
+    }
+  }
 }
 
-// WebSocket 연결 핸들링
 wss.on('connection', (ws) => {
+  // 이 연결의 상태
+  ws.meta = { roomId: null, polite: null };
+
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
-    // 1) 방 입장 (재접속 포함)
+    // 1) 클라이언트가 방 참여 요청
     if (msg.type === 'join') {
-      const { room: roomName, clientId } = msg;
-      if (!roomName || !clientId) return;
+      // 방 배정: 2인 미만인 방이 있으면 그 방, 아니면 새 방
+      const roomId = getOrCreateWaitingRoom();
+      const info = ROOMS.get(roomId);
+      info.clients.add(ws);
+      ws.meta.roomId = roomId;
 
-      const room = getOrCreateRoom(roomName);
-      const now = Date.now();
-      const exist = room.get(clientId);
+      // 참가 순서로 polite/impolite 결정
+      // - 첫 번째 입장자: polite:true (대기자)
+      // - 두 번째 입장자: polite:false (입장자, 최초 offer 보낼 것)
+      const isFirst = info.clients.size === 1;
+      ws.meta.polite = isFirst ? true : false;
 
-      if (exist) {
-        // 같은 clientId가 재접속(F5)한 경우: ws만 갈아끼움. (타이머/작업 없음 = 최소비용)
-        exist.ws = ws;
-        exist.lastSeenAt = now;
-      } else {
-        if (room.size >= 2) {
-          // 2명 초과 금지
-          send(ws, { type: 'room-full', room: roomName });
-          return;
-        }
-        room.set(clientId, { ws, firstJoinAt: now, lastSeenAt: now });
+      // 본인에게 방/역할 정보를 알려준다
+      ws.send(JSON.stringify({
+        type: 'room-info',
+        roomId,
+        polite: ws.meta.polite,
+      }));
+
+      // 방이 2명이 되면 서로 준비 완료 알림
+      if (info.clients.size === 2) {
+        broadcastToRoom(roomId, { type: 'both-ready' });
       }
-
-      // 소켓에 메타 저장(종료 시 정리용)
-      ws._roomName = roomName;
-      ws._clientId = clientId;
-
-      // 현재 인원 기준으로 역할 재통지
-      notifyRoles(roomName);
+      return;
     }
 
-    // 2) 시그널 릴레이 (다음 단계에서 사용할 예정: offer/answer/candidate 전달)
+    // 2) 같은 방의 상대에게 시그널 중계
     if (msg.type === 'signal') {
-      const roomName = ws._roomName;
-      const room = roomName && rooms.get(roomName);
-      if (!room) return;
-
-      // 같은 방의 "상대"에게 그대로 전달
-      for (const [peerId, info] of room) {
-        if (peerId !== ws._clientId) {
-          send(info.ws, { type: 'signal', from: ws._clientId, data: msg.data });
-        }
-      }
+      const roomId = getRoomOfClient(ws);
+      if (!roomId) return;
+      // 같은 방의 상대에게만 전달 (브로드캐스트하되 자기 자신 제외)
+      broadcastToRoom(roomId, { type: 'signal', data: msg.data }, ws);
+      return;
     }
   });
 
-  // 연결 종료 시 정리(최소 작업)
   ws.on('close', () => {
-    const roomName = ws._roomName;
-    const clientId = ws._clientId;
-    if (!roomName || !clientId) return;
+    const roomId = getRoomOfClient(ws);
+    if (!roomId) return;
+    const info = ROOMS.get(roomId);
+    info.clients.delete(ws);
 
-    const room = rooms.get(roomName);
-    if (!room) return;
-
-    const record = room.get(clientId);
-    // 같은 ws일 때만 제거(중복 close 방지)
-    if (record && record.ws === ws) {
-      room.delete(clientId);
-      if (room.size === 0) rooms.delete(roomName);
-      else notifyRoles(roomName); // 남은 1명에게 "상대가 나갔다"는 사실이 roles 업데이트로 전달됨
+    // 방이 비면 정리, 한 명 남으면 그대로 대기 상태 유지
+    if (info.clients.size === 0) {
+      ROOMS.delete(roomId);
     }
   });
 });
