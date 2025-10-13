@@ -12,7 +12,7 @@
 1. 나는 현재 webRTC를 이용해서 2인용 웹게임을 만들고 있다.
 2. 두 peer가 webRTC로 room에 연결되어 있다면, 서버에서는 수많은 room을 가질 수 있다.
 3. client는 html, css, javascript(esmodule), webpack을 사용중이다.
-4. server는 node로 new WebSocket signaling 서버를 만들어서 사용중이다.
+4. server는 new WebSocket signaling 서버를 node로 만들어서 사용중이다.
 5. webRTC로 연결된 두 peer 중 한 명이 브라우저에서 새고로침(F5) 하면 재연결이 잘 되고 있다.
 6. 그런데 webRTC로 연결된 두 peer가 서로 새로고침(F5)을 난타하면, webRTC 연결이 끊어진다.
 7. 새로고침을 서로 난타하면, 누가 offer를 보내야 할 지 몰라, sdp/cnadidate 충돌이 발생하고 있는 것으로 예상될 뿐이다.
@@ -23,12 +23,14 @@
 12. 내가 "다음 단계로 가자"고 하면, 그 때 다음 step으로 넘어가라.
 
 필수조건:
-- 첫번째 접속한 Peer가 대기중이고, 두번째 접속한 Peer가 진입했을 때, offer를 보내라.
+- 서버에 무수히 많은 room이 동시에 생길고 사라질 수 있기 때문에, 서버 코드는 동시성과 최적화에 최대한 신경써야 한다.
+- 접속 버튼 없이, 브라우저 url 접속하는 순간 WebRTC연결을 시도해야 한다.
+- 반드시 두번째 peer가 입장했을 때, Perfect Negotiation 관례에 따라 두 peer 중, 한 peer만, offer를 보내라.
 - 두 peer가 webRTC로 연결된 후, 둘 중에 한 Peer가 새로고침 하면, 다시 재연결 되어야 한다.
 - 두 peer가 webRTC로 연결된 후, 두 peer가 새로고침(F5)를 서로 난타해도, 다시 재연결 되어야 한다.
 - 두 peer가 webRTC로 연결된 후, 브라우저에서 새로고침 할 때 마다, signaling서버에 재연결을 위한 요청 비용이 발생하므로, 새로고침 시 signaling 서버의 Task는 최소화 시켜야 한다.
 - signaling server에서 두 peer가 한 room에 메칭되면, 그 다음 접속한 peer는 새로운 room에 배정받아야 한다.
-- 내가 webRTC를 잘 모르니까, 모든 코드에 아주 쉽고 자세한 주석을 꼭 첨부해라!
+- 내가 webRTC를 잘 모르니까, 반드시 모든 코드에 주석을 자세한 첨부해라!
 
 
 

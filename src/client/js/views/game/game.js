@@ -11,77 +11,79 @@ import {scheduleRefresh} from "../../common/refreshScheduler.js"
 const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
 // const ws = new WebSocket(WS_URL);
 
-// STEP 1: 역할 정하기 + 최소 시그널링 + Perfect Negotiation 스캐폴딩
-// - 첫 입장자: polite: true (대기자)
-// - 두 번째: polite:false (입장자, 최초 offer 생성 담당)
-// - 아직은 "재연결" 로직을 넣지 않습니다. 오늘은 구조/역할/흐름만 정확히
+// ———————————————————————————————————————————————————
 
-// === 0) 환경 준비: WebSocket 연결 ===
+/**
+ * STEP 1 클라이언트
+ * - 페이지 로드 즉시 WebSocket 연결 (버튼 없음)
+ * - 서버가 배정한 roomId / peerId / role 을 수신
+ * - 방이 두 명으로 "ready" 되면, 콘솔/화면에 상태 로그만 출력
+ * - 아직 RTCPeerConnection은 만들지 않음 (다음 단계에서 추가)
+ */
 
-function send(msg) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-  } else {
-    ws.addEventListener('open', () => ws.send(JSON.stringify(msg)), { once: true });
-  }
-}
+const logEl = document.getElementById('log');
+const log = (...args) => {
+  console.log(...args);
+  logEl.textContent += args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') + '\n';
+};
 
-// === 1) RTCPeerConnection 준비 ===
-// - 향후 glare(동시 협상) 대비용 플래그들(Perfect Negotiation 핵심 변수)만 미리 잡아둡니다.
-// - 오늘은 "자리만" 잡아두고, 실제 충돌 처리/재연결은 다음 단계에서 점진 추가.
-let pc;
-let polite = null;                 // 서버가 정해주는 내 역할 (true=polite, false=impolite)
-let makingOffer = false;           // 지금 내가 offer를 만들고 있는 중인지
-let ignoreOffer = false;           // 상대가 보낸 offer를 일시적으로 무시해야 하는지
-let isSettingRemoteAnswerPending = false; // answer 적용 대기 중인지
+// 배포 환경에 맞춰 주소 수정하세요.
+const SIGNAL_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
 
-// 데이터채널(게임용) 예시: 오늘은 채널만 만들고, 이벤트만 연결해 둠
-let dc;
+let ws;
+let roomId = null;
+let peerId = null;
+let role = null;
 
-// 유틸: 로깅
-const log = (...args) => console.log('[client]', ...args);
+function connect() {
+  ws = new WebSocket(SIGNAL_URL);
 
-// === 2) onnegotiationneeded 핸들러 (offer를 만드는 표준 타이밍) ===
-// - 오늘은 "두 번째 입장자만" 최초 offer를 만들도록 gate를 둡니다.
-// - 추후 재협상(새로고침 복구 등)은 STEP 2에서 여기에 자연스럽게 얹습니다.
-async function onNegotiationNeeded() {
-  try {
-    makingOffer = true;
-    // gate: 최초에는 "입장자(impolite=false)가 먼저 offer"만 허용
-    // (양쪽 다 새로고침 난타 등은 다음 단계에서 해결)
-    if (polite === false) {
-      log('onnegotiationneeded: I am impolite(=caller), creating offer...');
-      await pc.setLocalDescription(await pc.createOffer());
-      send({ type: 'signal', data: { sdp: pc.localDescription } });
-    } else {
-      // polite=true(대기자)는 최초엔 offer를 만들지 않음
-      log('onnegotiationneeded: I am polite(=callee). Skip initial offer.');
+  ws.addEventListener('open', () => {
+    log('[ws] connected');
+    // STEP1에서는 서버가 접속 즉시 방을 배정하므로, 여기서 보낼 것은 없음
+  });
+
+  ws.addEventListener('message', (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    if (msg.type === 'joined') {
+      roomId = msg.roomId;
+      peerId = msg.peerId;
+      role = msg.role;
+      log('[joined]', { roomId, peerId, role });
+      if (role === 'impolite') {
+        log('→ 나는 먼저 들어온 impolite 역할입니다. (다음 단계에서 glare 시 롤백하지 않음)');
+      } else {
+        log('→ 나는 나중에 들어온 polite 역할입니다. (다음 단계에서 glare 시 롤백 담당)');
+      }
     }
-  } catch (err) {
-    console.error(err);
-  } finally {
-    makingOffer = false;
-  }
-}
 
-// === 3) 원격 sdp/candidate 처리 ===
-// - 상대가 보낸 sdp 또는 ICE를 pc에 적용
-// - glare/rollback은 다음 단계에서 안전장치 추가
-async function handleSignal({ sdp, candidate }) {
-  try {
-    if (sdp) {
-      log("rx sdp", sdp.type);
-
-      // offer/answer 에 따라 분기
-      const desc = sdp;
-      const readyForOffer =
-        !makingOffer && (pc.signalingState === "stable" || isSettingRemoteAnswerPending);
-      const offerCollision = desc.type === "offer" && !readyForOffer;
-
-      // STEP 1에서는 glare 최소화만: polite=false(입장자)가 offer를 먼저 보낼테니
-      // 대기자(polite=true)는 여기서 answer만 생성하는 경로로 갑니다.
+    if (msg.type === 'ready') {
+      log('[ready] 두 명 매칭 완료. 상대 peerId =', msg.peerId);
+      // 다음 단계에서 이 타이밍에 RTCPeerConnection을 만들고
+      // Perfect Negotiation 골격을 붙일 예정입니다.
     }
-  } catch (err) {
 
-  }
+    if (msg.type === 'peer-left') {
+      log('[peer-left] 상대가 떠났습니다. 새 입장을 기다리거나, 다음 단계에서 재연결 로직을 붙입니다.');
+    }
+
+    // 이후 단계에서 사용할 relay 메시지 예: {type:'signal', sdp/candidate...}
+    if (msg.type === 'signal') {
+      log('[relay] 수신:', msg);
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    log('[ws] closed');
+    // 새로고침 난타 상황에서도 서버 부하를 줄이기 위해,
+    // 즉시 무한 재연결은 지양 (지수 백오프는 다음 단계에서 다룸).
+  });
+
+  ws.addEventListener('error', () => {
+    log('[ws] error');
+  });
 }
+
+connect();
