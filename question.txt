@@ -65,6 +65,4 @@
 - 내가 webRTC를 잘 모르니까, 모든 코드에 아주 쉽고 자세한 주석을 꼭 첨부해주세요!
 
 
-unzip "C:/Users/Administrator/Downloads/유즈맵.zip" -d "H:/Program Files (x86)/Warcraft III/install/Maps/유즈맵"
-
-unzip "C:/Users/Administrator/Downloads/무한맵.zip" -d "H:/Program Files (x86)/Starcraft/Maps/무한맵"
+unzip "C:/Users/Administrator/Downloads/유즈맵.zip" -d "H:/Program Files (x86)/Warcraft III/install/Maps/유즈맵" && unzip "C:/Users/Administrator/Downloads/무한맵.zip" -d "H:/Program Files (x86)/Starcraft/Maps/무한맵"
