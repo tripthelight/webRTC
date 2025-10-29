@@ -17,3 +17,11 @@ const ICE_SERVERS = [
 ];
 
 // ———————————————————————————————————————————————————
+
+// ———————————————————————————————————————————————————
+
+const IPT = document.querySelector(".ipt");
+const BTN = document.querySelector(".btn");
+BTN.addEventListener("click", () => {
+  IPT.value !== "" && STATE.dc.send(IPT.value);
+});
