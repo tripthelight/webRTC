@@ -97,12 +97,13 @@ const RESEND_INTERVAL = 300;
 const RESEND_MAX = 10;
 
 function rawSend(env) {
-  if (!STATE.dc || STATE.dc.readyState !== "open") return;
-  if (typeof env.ack !== "number") {
+  if (!STATE.dc || STATE.dc.readyState !== 'open') return;
+  // 최신 ack를 동봉(양방향 ack 파이프라인)
+  if (typeof env.ack !== 'number') {
     env.ack = RELIABLE.expectedSeq - 1;
   }
   STATE.dc.send(JSON.stringify(env));
-};
+}
 function stopPingLoop() {
   if (PING_TIMER) {
     clearInterval(PING_TIMER);
@@ -121,14 +122,15 @@ function stopResendLoop() {
   if (RELIABLE.resendTimer) {
     clearInterval(RELIABLE.resendTimer);
     RELIABLE.resendTimer = null;
-  };
-};
+  }
+}
 function startResendLoop() {
   if (RELIABLE.resendTimer) return;
   RELIABLE.resendTimer = setInterval(() => {
     const now = Date.now();
     for (const [seq, rec] of RELIABLE.outbox) {
       if (!rec.sentAt || now - rec.sentAt >= RESEND_INTERVAL) {
+        // 재전송(최대 횟수 초과 시 포기 및 오류 로그)
         if (rec.retries >= RESEND_MAX) {
           console.warn(`seq ${seq} dropped after ${RESEND_MAX} retries`);
           RELIABLE.outbox.delete(seq);
@@ -139,11 +141,12 @@ function startResendLoop() {
         rawSend(rec.msg);
       }
     }
+    // outbox가 비면 타이머 중지
     if (RELIABLE.outbox.size === 0) {
       stopResendLoop();
     }
-  }, RESEND_INTERVAL)
-};
+  }, RESEND_INTERVAL);
+}
 function resetReliableLayer() {
   RELIABLE.nextSeq = 1;
   RELIABLE.expectedSeq = 1;
@@ -151,8 +154,9 @@ function resetReliableLayer() {
   RELIABLE.buffer.clear();
   RELIABLE.lastAcked = 0;
   stopResendLoop();
-};
+}
 function ackUntil(seq) {
+  // seq 이하 outbox를 정리
   let removed = 0;
   for (const s of Array.from(RELIABLE.outbox.keys())) {
     if (s <= seq) {
@@ -163,7 +167,7 @@ function ackUntil(seq) {
   if (removed) {
     RELIABLE.lastAcked = seq;
   }
-};
+}
 function deliverToGame(payload, meta) {
   console.log(
     `
@@ -174,81 +178,115 @@ function deliverToGame(payload, meta) {
   );
 };
 function handleReliableReceive(env) {
-  const seq = env.seq; // 1
+  const seq = env.seq;
+
+  // 이미 전달한(seq < expected) 이거나 중복이면 무시
   if (seq < RELIABLE.expectedSeq) return;
+
+  // 미래 패킷(seq > expected) → 버퍼에 저장
   if (seq > RELIABLE.expectedSeq) {
     RELIABLE.buffer.set(seq, env);
-    rawSend({ v: 1, t: "ACK", seq: RELIABLE.expectedSeq - 1 });
+    // 최신 ack를 동봉해 즉시 회신해 주면 상대 재전송 최적화에 도움
+    rawSend({ v: 1, t: 'ACK', seq: RELIABLE.expectedSeq - 1 });
     return;
-  };
+  }
 
+  // 정확히 다음에 전달되어야 할 패킷(seq === expected)
   deliverToGame(env.payload, { reliable: true, seq });
 
+  // 전달 완료 → expectedSeq 증가
   RELIABLE.expectedSeq++;
 
-  while(RELIABLE.buffer.has(RELIABLE.expectedSeq)) {
+  // 혹시 버퍼에 다음 것들이 와 있으면 연속으로 전달
+  while (RELIABLE.buffer.has(RELIABLE.expectedSeq)) {
     const nextEnv = RELIABLE.buffer.get(RELIABLE.expectedSeq);
     RELIABLE.buffer.delete(RELIABLE.expectedSeq);
     deliverToGame(nextEnv.payload, { reliable: true, seq: RELIABLE.expectedSeq });
     RELIABLE.expectedSeq++;
   }
 
-  rawSend({ v: 1, t: "ACK", seq: RELIABLE.expectedSeq - 1 });
-};
+  // 전달 후 ack 전송(상대의 재전송 종료를 빠르게)
+  rawSend({ v: 1, t: 'ACK', seq: RELIABLE.expectedSeq - 1 });
+}
 function handleEnvelope(env) {
   if (!env || env.v !== 1 || !env.t) return;
-  if (typeof env.ack === "number") {
+
+  // 상대가 동봉해 온 ack를 처리 (outbox 정리)
+  if (typeof env.ack === 'number') {
     ackUntil(env.ack);
-  };
-  switch(env.t) {
-    case "ACK" : {
-      if (typeof env.seq === "number") ackUntil(env.seq);
+  }
+
+  switch (env.t) {
+    case 'ACK': {
+      // 단독 ACK 타입도 지원(현재는 MSG에 동봉 ack로 충분)
+      if (typeof env.seq === 'number') ackUntil(env.seq);
       break;
     }
-    case "PING": {
-      rawSend({ v: 1, t: "PONG", ts: Date.now() });
+    case 'PING': {
+      // PING 수신 → 곧바로 PONG 회신(내 ack 포함)
+      rawSend({ v: 1, t: 'PONG', ts: Date.now() });
       break;
     }
-    case "PONG": {
+    case 'PONG': {
+      // PONG → RTT 측정
       if (LAST_PING_TS) {
         LAST_RTT_MS = Date.now() - LAST_PING_TS;
-        console.log(`RTT ~ ${LAST_RTT_MS} ms`);
+        log(`RTT ~ ${LAST_RTT_MS} ms`);
       }
       break;
     }
-    case "MSG" : {
-      if (typeof env.seq === "number") {
+    case 'HELLO': {
+      // 새 세션 인사: 필요하면 내 상태 스냅샷 전달
+      // rawSend({ v:1, t:'STATE', payload:getCurrentGameSnapshot() });
+      break;
+    }
+    case 'STATE': {
+      // 전체 상태 스냅샷 수신 → 로컬 UI/상태 갱신
+      // applyGameSnapshot(env.payload);
+      break;
+    }
+    case 'MSG': {
+      // --- 신뢰/순서 보장 수신 ---
+      if (typeof env.seq === 'number') {
         handleReliableReceive(env);
       } else {
+        // 비신뢰/무순서 수신(예: 단순 입력) → 즉시 전달
         deliverToGame(env.payload, { unreliable: true });
       }
       break;
     }
-  };
-};
+  }
+}
 function sendGame(payload, { reliable = true, id = undefined } = {}) {
-  if (!STATE.dc || STATE.dc.readyState !== "open") return;
+  if (!STATE.dc || STATE.dc.readyState !== 'open') return;
 
   if (!reliable) {
-    const env = { v: 1, t: "MSG", ts: Date.now(), id, payload };
+    // 비신뢰/무순서(간단): 타입만 MSG, seq/ack 없이 전송
+    const env = { v: 1, t: 'MSG', ts: Date.now(), id, payload };
     STATE.dc.send(JSON.stringify(env));
     return;
-  };
+  }
 
+  // --- 신뢰/순서 보장 경로 ---
   const seq = RELIABLE.nextSeq++;
   const env = {
     v: 1,
-    t: "MSG",
+    t: 'MSG',
     seq,
     ts: Date.now(),
     id,
+    // 내가 마지막으로 "전달 완료"한 원격 seq를 ack에 담아 보내줘 상호 확인 빠르게
     ack: RELIABLE.expectedSeq - 1,
     payload,
   };
+
+  // outbox에 보관(ACK 오기 전까지 재전송 대상)
   RELIABLE.outbox.set(seq, { msg: env, sentAt: 0, retries: 0 });
+
+  // 즉시 송신 + 재전송 루프 가동
   rawSend(env);
   startResendLoop();
-};
+}
 
 
 
