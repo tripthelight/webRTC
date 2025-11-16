@@ -66,3 +66,6 @@
 
 
 unzip "C:/Users/Administrator/Downloads/유즈맵.zip" -d "H:/Program Files (x86)/Warcraft III/install/Maps/유즈맵" && unzip "C:/Users/Administrator/Downloads/무한맵.zip" -d "H:/Program Files (x86)/Starcraft/Maps/무한맵"
+
+
+unzip "C:/Users/Administrator/Downloads/무한맵.zip" -d "Y:/Game/StarCraft/Maps/무한맵"
