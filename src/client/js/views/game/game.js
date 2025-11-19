@@ -5,11 +5,11 @@ import "../../../scss/common.scss";
 import {scheduleRefresh} from "../../common/refreshScheduler.js"
 
 // 특정 시간, 지정한 횟수만큼 브라우저 새로고침
-// scheduleRefresh();
+scheduleRefresh();
 
-// ----- WebSocket signaling -----
-const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
-const ws = new WebSocket(WS_URL);
+// // ----- WebSocket signaling -----
+// const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
+// const ws = new WebSocket(WS_URL);
 
 const ICE_SERVERS = [
   // 공개 STUN 예시(실서비스는 TURN 필요)
@@ -35,6 +35,11 @@ const STATE = {
   isSettingRemoteAnswerPending: false,
 };
 
+function safeWsSend(obj) {
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify(obj));
+  }
+}
 function sendSignal(toPeerId, data) {
   if (!STATE.ws || STATE.ws.readyState !== WebSocket.OPEN) return;
   STATE.ws.send(JSON.stringify({ type: "signal", to: toPeerId, data }));
@@ -444,6 +449,9 @@ async function handleRemoveSignal(msg) {
 function connectSignaling(connected = false) {
   if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) return;
 
+  // ----- WebSocket signaling -----
+  const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
+  const ws = new WebSocket(WS_URL);
   STATE.ws = ws;
 
   ws.addEventListener("open", () => {
@@ -453,7 +461,12 @@ function connectSignaling(connected = false) {
       clearTimeout(WS_RETRY.timer);
       WS_RETRY.timer = null;
     };
+
+    // ★ 이전 roomId가 있으면 힌트로 보낸다.
+    const roomHint = sessionStorage.getItem('roomId') || null;
+    safeWsSend({ type: 'join', roomHint });
   });
+
   ws.addEventListener("message", async (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; };
@@ -462,6 +475,9 @@ function connectSignaling(connected = false) {
         STATE.roomId = msg.roomId;
         STATE.peerId = msg.peerId;
         STATE.role = msg.role;
+        // ★ 세션에 저장(재접속시 hint로 사용)
+        sessionStorage.setItem('roomId', STATE.roomId);
+        log(`Assigned room=${STATE.roomId}, me=${STATE.peerId}, role=${STATE.role}`);
         break;
       }
       case "paired" : {
@@ -469,12 +485,18 @@ function connectSignaling(connected = false) {
         if (msg.you?.peerId === STATE.peerId) {
           STATE.role = msg.you.role;
           STATE.partnerId = msg.partner.peerId;
+
+          // ★ 안전 위해 여기서도 다시 저장(경합 대비)
+          sessionStorage.setItem('roomId', msg.roomId);
+          log(`Paired! me(${STATE.role}) <-> partner(${msg.partner.peerId}/${msg.partner.role})`);
+
           await startPeerConnection();
         };
         break;
       }
       case "partner-left" : {
         if (msg.roomId !== STATE.roomId) return;
+        console.log("Partner Lefted...");
         cleanupPeerConnection();
         break;
       }
@@ -487,8 +509,8 @@ function connectSignaling(connected = false) {
       }
     };
   });
-  ws.addEventListener("close", () => {
-    log("WS closed. Try reconnecting...");
+  ws.addEventListener("close", (ev) => {
+    log("WS closed. Try reconnecting...", ev.code, ev.reason);
     scheduleWsReconnect();
   });
   ws.addEventListener("error", () => {
