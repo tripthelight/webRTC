@@ -15,7 +15,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '211.118.157.199';
+const HOST = process.env.RTC_HOST || '211.118.157.157';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });

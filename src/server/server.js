@@ -16,7 +16,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({server});
 
 const PORT = process.env.RTC_PORT || 5000;
-const HOST = process.env.RTC_HOST || '211.118.157.199';
+const HOST = process.env.RTC_HOST || '211.118.157.157';
 server.listen(PORT, HOST, () => {
   console.log(`Server is running on http://${HOST}:${PORT}`);
 });
@@ -104,6 +104,14 @@ function createRoomWithId(roomId) {
 function handleJoin(ws, meta, msg) {
   // msg: { type:'join', roomHint?: string }
   const requested = typeof msg.roomHint === 'string' ? msg.roomHint : null;
+
+  if (requested && !ROOMS[requested]) {
+    // sessionStorage에 roomId 있음
+    // 서로 막 새로고침 난타
+
+    // 상대가 방을 나간상태에서 내가 새로고침 후 여기로 진입
+    return;
+  }
 
   // 1) roomHint가 있고, 그 방이 현재 살아있다면 그 방으로
   // 두 peer가 나가지 않은 상태에서 한 peer가 새로고침하면 새로고침 한 peer는 여기를 탐
