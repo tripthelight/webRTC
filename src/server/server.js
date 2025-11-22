@@ -26,6 +26,10 @@ server.listen(PORT, HOST, () => {
 const ROOM_TTL_MS = 15_000; // 15초 안에 돌아오면 같은 room 재활용
 const TOMBSTONES = new Map(); // roomId -> { roomId, expiredAt, lastSeenAt }
 
+const REJOIN_GRACE_MS = 3000; // 3초 유예: 새로고침 감지 윈도우
+// 소켓 종료 후 "아직 진짜 퇴장인지 모르는" 대기열: peerId -> { roomId, tabId, timer }
+const PENDING_LEAVE = new Map();
+
 const ROOMS = Object.create(null);
 const PEERS = new WeakMap();
 
@@ -88,6 +92,7 @@ function attachToRoom(ws, meta, room) {
         partner: { peerId: partnerId, role: (role === 'impolite' ? 'polite' : 'impolite') },
       });
     };
+    room.paired = true;
     if (room.lockAfterLeave) {
       delete room["lockAfterLeave"];
     };
@@ -98,6 +103,8 @@ function createRoomWithId(roomId) {
     id: roomId,
     clients: new Map(),
     createdAt: now(),
+    paired: true,
+    lockAfterLeave: true
   };
   return ROOMS[roomId];
 };
@@ -105,13 +112,11 @@ function handleJoin(ws, meta, msg) {
   // msg: { type:'join', roomHint?: string }
   const requested = typeof msg.roomHint === 'string' ? msg.roomHint : null;
 
-  if (requested && !ROOMS[requested]) {
-    // sessionStorage에 roomId 있음
-    // 서로 막 새로고침 난타
+  // - 한 peer가 처음 진입 후 새로고침 - requested 있음
+  // - 두 peer 연결된 후 한 peer가 새로고침 - requested 있음
+  // - 두 peer 연결된 후 두 peer가 새로고침 난타 - requested 있다없다
+  // - 두 peer 연결된 후 한 peer가 나가고 남은 peer가 새로고침 - requested 있음
 
-    // 상대가 방을 나간상태에서 내가 새로고침 후 여기로 진입
-    return;
-  }
 
   // 1) roomHint가 있고, 그 방이 현재 살아있다면 그 방으로
   // 두 peer가 나가지 않은 상태에서 한 peer가 새로고침하면 새로고침 한 peer는 여기를 탐
@@ -129,12 +134,11 @@ function handleJoin(ws, meta, msg) {
 
       // 2) 두 peer가 연결되었다가 한 peer가 나간 후 나머지 peer가 새로고침하면 새로고침 한 peer가 여기 탐
       // - 나간것이 확인되면 남아있는 peer에게 partner-left 전송
-      console.log("두 peer가 연결되었다가 한 peer가 나간 후 나머지 peer가 새로고침하면 새로고침 한 peer가 여기 탐");
 
       // 3) 두 peer가 모두 있는 상태에서 두 peer가 모두 새로고침 난타하면 여기를 탐
       // - 이 후 단계 진행
-      console.log("두 peer가 모두 있는 상태에서 두 peer가 모두 새로고침 난타하면 여기를 탐");
 
+      // ———————————————————————————————————————————————————————————————————————————
       // 부활
       TOMBSTONES.delete(requested);
       const revivedRoom = createRoomWithId(requested);
@@ -164,21 +168,6 @@ function cbConnection(ws) {
     if (!meta) return;
 
     if (msg?.type === 'join') { // ★ 클라가 요청한 room 합류
-      if (msg?.roomHint) {
-        // sessionStorage에 roomId 있음
-        // 새로고침 한 peer는 여기를 탐
-        const room = ROOMS[msg.roomHint];
-        if (room) {
-          // 둘 중에 한 명은 남아있었던 상태
-        } else {
-          // 둘 중에 한 명 이상 나간 상태
-          // 서로 새로고침 난타해도 여기 탈듯..
-        }
-      } else {
-        // sessionStorage에 roomId 없음 : null
-        // 아예 처음 연결 시도
-      }
-
       handleJoin(ws, meta, msg);
       return;
     }
@@ -199,19 +188,42 @@ function cbConnection(ws) {
     if (!meta) return;
     const { peerId, roomId } = meta;
     const room = ROOMS[roomId];
+
     if (room) {
+      if (room.clients.size === 2) {
+        // 두 peer 모두 있음
+        room.clients.delete(peerId);
+        broadcast(room, { type: 'partner-left', roomId, peerId });
+        room.lockAfterLeave = true;
+      } else if (room.clients.size === 1) {
+        if (room.paired) {
+          // 이전에 연결된 적 있음
+          room.lockAfterLeave = true;
+          TOMBSTONES.set(roomId, { roomId, expiredAt: now() + ROOM_TTL_MS, lastSeenAt: now() });
+        } else {
+          // 내가 처음 진입하고 아직 상대 peer 없음
+        }
+        room.clients.delete(peerId);
+        delete ROOMS[roomId];
+      }
+    }
+    PEERS.delete(ws);
+
+
+    /* if (room) {
       room.clients.delete(peerId);
       broadcast(room, { type: 'partner-left', roomId, peerId });
 
       room.lockAfterLeave = true;
 
+      // 두 peer 중 한 peer가 남아있으면 여기 안탐
       if (room.clients.size === 0) {
         // 즉시 삭제 대신, 무덤에 15초간 보관
         TOMBSTONES.set(roomId, { roomId, expiredAt: now() + ROOM_TTL_MS, lastSeenAt: now() });
         delete ROOMS[roomId];
       }
     }
-    PEERS.delete(ws);
+    PEERS.delete(ws); */
   });
 };
 
