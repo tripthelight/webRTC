@@ -18,6 +18,8 @@ const ICE_SERVERS = [
 
 // ———————————————————————————————————————————————————
 
+const REJOIN_GRACE_MS = 3000; // 3초 유예: 새로고침 감지 윈도우
+
 function log(...args) {
   console.log("[CLIENT]", ...args);
 };
@@ -30,6 +32,7 @@ const STATE = {
   partnerId: null,
   pc: null,
   dc: null,
+  reloadTimer: null,
   makingOffer: false,
   ignoreOffer: false,
   isSettingRemoteAnswerPending: false,
@@ -304,6 +307,24 @@ function sendGame(payload, { reliable = true, id = undefined } = {}) {
   startResendLoop();
 }
 
+// RELOAD REMOTE PEER CHECK EVENT
+function channelClose() {
+  console.log("Remote Peer Left...");
+  cleanupPeerConnection(false);
+  if (STATE.ws) {
+    try { STATE.ws.close(4000, "remote_peer_left"); } catch {};
+    STATE.ws = null;
+  }
+};
+function reloadConnectCheck() {
+  STATE.reloadTimer = setTimeout(() => {
+    if (!STATE.dc || STATE.dc.readyState !== 'open') {
+      channelClose();
+    } else {
+      clearTimeout(STATE.reloadTimer);
+    }
+  }, REJOIN_GRACE_MS);
+};
 
 
 
@@ -312,6 +333,10 @@ function sendGame(payload, { reliable = true, id = undefined } = {}) {
 function attachDataChannelHandlers(dc, tag) {
   dc.onopen = () => {
     log(`DataChannel[${tag}] open`);
+    if (STATE.reloadTimer) {
+      clearTimeout(STATE.reloadTimer);
+      STATE.reloadTimer = null;
+    };
 
     resetReliableLayer();
     // startPingLoop();
@@ -330,6 +355,8 @@ function attachDataChannelHandlers(dc, tag) {
     if (STATE.role === "impolite" && STATE.pc?.connectionState !== "closed") {
       debounceIceRestart();
     }
+
+    reloadConnectCheck();
   };
 };
 
@@ -463,7 +490,7 @@ function connectSignaling(connected = false) {
     };
 
     // ★ 이전 roomId가 있으면 힌트로 보낸다.
-    const roomHint = sessionStorage.getItem('roomId') || null;
+    const roomHint = window.sessionStorage.getItem('roomId') || null;
     safeWsSend({ type: 'join', roomHint });
   });
 
@@ -472,11 +499,15 @@ function connectSignaling(connected = false) {
     try { msg = JSON.parse(ev.data); } catch { return; };
     switch(msg.type) {
       case "room-assigned" : {
+        if (msg?.pairedDataChannel) {
+          // 이전에 상대 peer와 DataChannel로 연결했었음
+          reloadConnectCheck();
+        }
         STATE.roomId = msg.roomId;
         STATE.peerId = msg.peerId;
         STATE.role = msg.role;
         // ★ 세션에 저장(재접속시 hint로 사용)
-        sessionStorage.setItem('roomId', STATE.roomId);
+        window.sessionStorage.setItem('roomId', STATE.roomId);
         log(`Assigned room=${STATE.roomId}, me=${STATE.peerId}, role=${STATE.role}`);
         break;
       }
@@ -487,7 +518,7 @@ function connectSignaling(connected = false) {
           STATE.partnerId = msg.partner.peerId;
 
           // ★ 안전 위해 여기서도 다시 저장(경합 대비)
-          sessionStorage.setItem('roomId', msg.roomId);
+          window.sessionStorage.setItem('roomId', msg.roomId);
           log(`Paired! me(${STATE.role}) <-> partner(${msg.partner.peerId}/${msg.partner.role})`);
 
           await startPeerConnection();
@@ -511,6 +542,9 @@ function connectSignaling(connected = false) {
   });
   ws.addEventListener("close", (ev) => {
     log("WS closed. Try reconnecting...", ev.code, ev.reason);
+    if (ev.code === 4000 && ev.reason === "remote_peer_left") {
+      return;
+    }
     scheduleWsReconnect();
   });
   ws.addEventListener("error", () => {

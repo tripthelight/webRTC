@@ -71,13 +71,13 @@ function deleteRoomIfEmpty(roomId) {
     delete ROOMS[roomId];
   }
 };
-function attachToRoom(ws, meta, room) {
+function attachToRoom(ws, meta, room, pairedDataChannel) {
   room.clients.set(meta.peerId, ws);
   meta.roomId = room.id;
 
   // 역할 부여
   const role = (room.clients.size === 1) ? 'impolite' : 'polite';
-  safeSend(ws, { type: 'room-assigned', roomId: room.id, peerId: meta.peerId, role });
+  safeSend(ws, { type: 'room-assigned', roomId: room.id, peerId: meta.peerId, role, pairedDataChannel });
 
   if (room.clients.size === 2) {
     const peers = Array.from(room.clients.keys());
@@ -127,7 +127,13 @@ function handleJoin(ws, meta, msg) {
 
   // 2) roomHint가 무덤에 있고(아직 TTL 안 지남) → 방 부활
   if (requested && TOMBSTONES.has(requested)) {
-    const tomb = TOMBSTONES.get(requested);
+    // 부활
+    TOMBSTONES.delete(requested);
+    const revivedRoom = createRoomWithId(requested);
+    attachToRoom(ws, meta, revivedRoom, true);
+    return;
+
+    /* const tomb = TOMBSTONES.get(requested);
     if (tomb.expiredAt > now()) {
       // 1) 한 peer가 처음 진입한 후 상대방을 기다리던 중 새로고침하면 여기 탐
       // - 이 후 단계 진행
@@ -142,11 +148,11 @@ function handleJoin(ws, meta, msg) {
       // 부활
       TOMBSTONES.delete(requested);
       const revivedRoom = createRoomWithId(requested);
-      attachToRoom(ws, meta, revivedRoom);
+      attachToRoom(ws, meta, revivedRoom, true);
       return;
     } else {
       TOMBSTONES.delete(requested); // 만료됐으면 버림
-    }
+    } */
   }
 
   // 3) roomHint가 없거나, 사용할 수 없다면 "일반 매칭"
