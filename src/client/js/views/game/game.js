@@ -133,7 +133,6 @@ function stopResendLoop() {
   }
 }
 function startResendLoop() {
-  console.log("보낸자 6-1 : startResendLoop 진입");
   if (RELIABLE.resendTimer) return;
   RELIABLE.resendTimer = setInterval(() => {
     const now = Date.now();
@@ -143,7 +142,6 @@ function startResendLoop() {
         if (rec.retries >= RESEND_MAX) {
           console.warn(`seq ${seq} dropped after ${RESEND_MAX} retries`);
           RELIABLE.outbox.delete(seq);
-          console.log("보낸자 6-2 : outbox 삭제");
           continue;
         }
         rec.sentAt = now;
@@ -156,7 +154,6 @@ function startResendLoop() {
       stopResendLoop();
     }
   }, RESEND_INTERVAL);
-  console.log("보낸자 6-2 : startResendLoop 종료");
 }
 function resetReliableLayer() {
   RELIABLE.nextSeq = 1;
@@ -181,7 +178,6 @@ function ackUntil(seq) {
   }
 }
 function deliverToGame(payload, meta) {
-  console.log("받는자 4 : deliverToGame에서 console 출력");
   console.log(
     `
       deliverToGame -
@@ -191,7 +187,6 @@ function deliverToGame(payload, meta) {
   );
 };
 function handleReliableReceive(env) {
-  console.log("받는자 3-1 : handleReliableReceive 진행");
   const seq = env.seq;
 
   // 이미 전달한(seq < expected) 이거나 중복이면 무시
@@ -220,7 +215,6 @@ function handleReliableReceive(env) {
     RELIABLE.expectedSeq++;
   }
 
-  console.log("받는자 3-2 : rawSend 에 ACK 전송");
   // 전달 후 ack 전송(상대의 재전송 종료를 빠르게)
   rawSend({ v: 1, t: 'ACK', seq: RELIABLE.expectedSeq - 1 });
 }
@@ -262,7 +256,6 @@ function handleEnvelope(env) {
       break;
     }
     case 'MSG': {
-      console.log("받는자 2 : handleEnvelope 에서 MSG로 받음");
       // --- 신뢰/순서 보장 수신 ---
       if (typeof env.seq === 'number') {
         handleReliableReceive(env);
@@ -301,9 +294,7 @@ function sendGame(payload, { reliable = true, id = undefined } = {}) {
   RELIABLE.outbox.set(seq, { msg: env, sentAt: 0, retries: 0 });
 
   // 즉시 송신 + 재전송 루프 가동
-  console.log("보낸자 1 : rawSend에 env 전송");
   rawSend(env);
-  console.log("보낸자 5 : startResendLoop 시작");
   startResendLoop();
 }
 
