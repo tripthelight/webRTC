@@ -161,7 +161,9 @@ function handleJoin(ws, meta, msg) {
   attachToRoom(ws, meta, room);
 }
 
-function cbConnection(ws) {
+function cbConnection(ws, req) {
+  // const ip = req?.socket?.remoteAddress;
+  // console.log('클라이언트 IP:', ip);
   const peerId = randomUUID();
 
   // "바로 배정"하지 않고, 클라의 'join' 메시지를 기다립니다.

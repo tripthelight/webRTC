@@ -2,6 +2,7 @@ import "../../../scss/common.scss";
 // import {Signaling} from '../../../ws/signaling.js';
 // import {createManualPeer} from '../../../rtc/manualPeer.js';
 // import {createPeer} from '../../../rtc/peerPN.js';
+import {getDeviceType} from "../../../module/isPC.js"
 import {scheduleRefresh} from "../../common/refreshScheduler.js"
 
 // 특정 시간, 지정한 횟수만큼 브라우저 새로고침
@@ -23,6 +24,9 @@ const REJOIN_GRACE_MS = 3000; // 3초 유예: 새로고침 감지 윈도우
 function log(...args) {
   console.log("[CLIENT]", ...args);
 };
+function gameId() {
+  return (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
 const STATE = {
   ws: null,
@@ -33,6 +37,7 @@ const STATE = {
   pc: null,
   dc: null,
   reloadTimer: null,
+  paired: false,
   makingOffer: false,
   ignoreOffer: false,
   isSettingRemoteAnswerPending: false,
@@ -71,7 +76,9 @@ const ICE_RESTART_DEBOUNCE = 1200;
 async function doIceRestart() {
   const pc = STATE.pc;
   if (!pc) return;
-  if (STATE.role !== "impolite") return;
+  if (STATE.role !== 'impolite') return; // 단일 오퍼 생성자 유지
+
+  log('ICE Restart: creating new offer with iceRestart:true');
   try {
     STATE.makingOffer = true;
     const offer = await pc.createOffer({ iceRestart: true });
@@ -85,9 +92,9 @@ function debounceIceRestart() {
   if (ICE_RESTART_TIMER) clearTimeout(ICE_RESTART_TIMER);
   ICE_RESTART_TIMER = setTimeout(() => {
     ICE_RESTART_TIMER = null;
-    doIceRestart().catch(err => console.error("ICE Restart Failed : ", err));
+    doIceRestart().catch(err => console.error('ICE restart failed:', err));
   }, ICE_RESTART_DEBOUNCE);
-};
+}
 
 const RELIABLE = {
   nextSeq: 1,
@@ -313,12 +320,10 @@ function reloadConnectCheck() {
       channelClose();
     } else {
       clearTimeout(STATE.reloadTimer);
+      STATE.reloadTimer = null;
     }
   }, REJOIN_GRACE_MS);
 };
-
-
-
 
 
 function attachDataChannelHandlers(dc, tag) {
@@ -385,7 +390,7 @@ async function startPeerConnection() {
   STATE.isSettingRemoteAnswerPending = false;
 
   if (STATE.role === "impolite") {
-    STATE.dc = pc.createDataChannel("game");
+    STATE.dc = pc.createDataChannel(gameId());
     attachDataChannelHandlers(STATE.dc, "active-dc");
   } else {
     STATE.dc = null;
@@ -482,7 +487,10 @@ function connectSignaling(connected = false) {
 
     // ★ 이전 roomId가 있으면 힌트로 보낸다.
     const roomHint = window.sessionStorage.getItem('roomId') || null;
-    safeWsSend({ type: 'join', roomHint });
+    safeWsSend({
+      type: 'join',
+      roomHint,
+    });
   });
 
   ws.addEventListener("message", async (ev) => {
@@ -491,9 +499,11 @@ function connectSignaling(connected = false) {
     switch(msg.type) {
       case "room-assigned" : {
         if (msg?.pairedDataChannel) {
+
           // 이전에 상대 peer와 DataChannel로 연결했었음
           reloadConnectCheck();
         }
+
         STATE.roomId = msg.roomId;
         STATE.peerId = msg.peerId;
         STATE.role = msg.role;
@@ -559,3 +569,14 @@ BTN.addEventListener("click", () => {
   sendGame({ type: "ROUND_START", seed: Math.random() });
   // sendGame({ type: "INPUT", key: "LEFT", ts: Date.now() }, { reliable: false });
 });
+
+function leavePage() {
+  if (STATE.roomId) {
+    window.sessionStorage.setItem("roomId", STATE.roomId);
+  }
+}
+if (getDeviceType() === "PC") {
+  window.addEventListener("beforeunload", () => {
+    leavePage();
+  });
+}
