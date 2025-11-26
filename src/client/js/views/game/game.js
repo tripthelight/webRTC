@@ -3,12 +3,17 @@
  */
 
 import "../../../scss/common.scss";
+import {scheduleRefresh} from "../../common/refreshScheduler.js"
 import { getDeviceType } from "../../../module/isPC.js"
 import { connectSignaling, sendGame } from "../../../module/webRTC/connectSignaling.js"
 import deliverToGame from "../../../module/webRTC/reliable/indianPoker/deliverToGame.js";
 import handleEnvelope from "../../../module/webRTC/reliable/indianPoker/handleEnvelope.js";
 import { handler } from "../../gameData/indianPoker/handler.js"
 
+// 특정 시간, 지정한 횟수만큼 브라우저 새로고침
+scheduleRefresh();
+
+// ------------------------------------------------------------
 // RELOAD EVENT
 function leavePage() {
   const DTA = handler.get("DATA");
@@ -29,6 +34,8 @@ function reloadDataHandler() {
   }
 }
 
+// ————————————————————————————————————————————————————————————
+// INIT
 function init() {
   reloadDataHandler();
   // connectSignaling.js서 불러와서 사용 함수
@@ -48,6 +55,7 @@ function init() {
     handler.set("k_3", "v_3");
   }, 5000);
 
+  // ------------------------------------------------------------
   const BTN_RELIABLE = document.querySelector(".btn.reliable");
   const BTN_UNRELIABLE = document.querySelector(".btn.unreliable");
   BTN_RELIABLE.addEventListener("click", () => {
@@ -61,6 +69,7 @@ function init() {
     sendGame({ type: 'UI/TICK', remainMs: 1000 }, { reliable: false });
     // sendGame({ type: 'UI/EMOTE', kind: 'wow' }, { reliable: false });
   });
+  // ------------------------------------------------------------
 
 
   if (getDeviceType() === "PC") {
@@ -70,6 +79,6 @@ function init() {
   }
 };
 
-// ------------------------------------------------------------
+// ————————————————————————————————————————————————————————————
 // DOCUMENT READY
 window.addEventListener("pageshow", init);
