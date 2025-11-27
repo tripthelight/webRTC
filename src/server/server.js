@@ -26,10 +26,6 @@ server.listen(PORT, HOST, () => {
 const ROOM_TTL_MS = 15_000; // 15초 안에 돌아오면 같은 room 재활용
 const TOMBSTONES = new Map(); // roomId -> { roomId, expiredAt, lastSeenAt }
 
-const REJOIN_GRACE_MS = 3000; // 3초 유예: 새로고침 감지 윈도우
-// 소켓 종료 후 "아직 진짜 퇴장인지 모르는" 대기열: peerId -> { roomId, tabId, timer }
-const PENDING_LEAVE = new Map();
-
 const ROOMS = Object.create(null);
 const PEERS = new WeakMap();
 

@@ -1,12 +1,6 @@
 import "../../scss/common.scss";
-// import {Signaling} from '../../../ws/signaling.js';
-// import {createManualPeer} from '../../../rtc/manualPeer.js';
-// import {createPeer} from '../../../rtc/peerPN.js';
 import {getDeviceType} from "../isPC.js"
 
-// // ----- WebSocket signaling -----
-// const WS_URL = `${process.env.SOCKET_HOST}:${process.env.RTC_PORT}`;
-// const ws = new WebSocket(WS_URL);
 
 const ICE_SERVERS = [
   // 공개 STUN 예시(실서비스는 TURN 필요)
@@ -17,6 +11,10 @@ const ICE_SERVERS = [
 
 const REJOIN_GRACE_MS = 3000; // 3초 유예: 새로고침 감지 윈도우
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * COMMON FUNCTION
+ */
 function log(...args) {
   console.log("[CLIENT]", ...args);
 };
@@ -57,6 +55,10 @@ function isPolite() {
   return STATE.role === "polite";
 };
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * WEBSOCKET RETRY
+ */
 let WS_RETRY = { tries: 0, timer: null };
 const WS_RETRY_MAX = 6;
 const WS_RETRY_BASE = 200;
@@ -71,6 +73,10 @@ function scheduleWsReconnect() {
   }, delay);
 };
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * ICE RESTART
+ */
 let ICE_RESTART_TIMER = null;
 const ICE_RESTART_DEBOUNCE = 1200;
 
@@ -97,6 +103,10 @@ function debounceIceRestart() {
   }, ICE_RESTART_DEBOUNCE);
 }
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * RELOABLE
+ */
 const RELIABLE = {
   nextSeq: 1,
   expectedSeq: 1,
@@ -185,7 +195,6 @@ export function ackUntil(seq) {
     RELIABLE.lastAcked = seq;
   }
 }
-
 export function handleReliableReceive(env) {
   const seq = env.seq;
 
@@ -220,7 +229,6 @@ export function handleReliableReceive(env) {
   // 전달 후 ack 전송(상대의 재전송 종료를 빠르게)
   rawSend({ v: 1, t: 'ACK', seq: RELIABLE.expectedSeq - 1 });
 }
-
 export function sendGame(payload, { reliable = true, id = undefined } = {}) {
   if (!STATE.dc || STATE.dc.readyState !== 'open') return;
 
@@ -252,7 +260,10 @@ export function sendGame(payload, { reliable = true, id = undefined } = {}) {
   startResendLoop();
 }
 
-// RELOAD REMOTE PEER CHECK EVENT
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * RELOAD REMOTE PEER CHECK EVENT
+ */
 function channelClose() {
   console.log("Remote Peer Left...");
   cleanupPeerConnection(false);
@@ -272,7 +283,25 @@ function reloadConnectCheck() {
   }, REJOIN_GRACE_MS);
 };
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * BROWSER RELOAD EVENT
+ */
+function leavePage() {
+  if (STATE.roomId) {
+    window.sessionStorage.setItem("roomId", STATE.roomId);
+  }
+}
+if (getDeviceType() === "PC") {
+  window.addEventListener("beforeunload", () => {
+    leavePage();
+  });
+}
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * PERFECT NEGOTIATION
+ */
 function attachDataChannelHandlers(dc, tag) {
   dc.onopen = () => {
     log(`DataChannel[${tag}] open`);
@@ -303,7 +332,6 @@ function attachDataChannelHandlers(dc, tag) {
     reloadConnectCheck();
   };
 };
-
 function cleanupPeerConnection(logIt = true) {
   if (STATE.dc) {
     try { STATE.dc.close() } catch {};
@@ -326,7 +354,6 @@ function cleanupPeerConnection(logIt = true) {
 
   if (logIt) log("pc clean up");
 };
-
 async function startPeerConnection() {
   cleanupPeerConnection(false);
 
@@ -380,7 +407,6 @@ async function startPeerConnection() {
     };
   };
 };
-
 async function handleRemoveSignal(msg) {
   const pc = STATE.pc;
   if (!pc) return;
@@ -417,6 +443,10 @@ async function handleRemoveSignal(msg) {
   };
 };
 
+/**
+ * ———————————————————————————————————————————————————————————————————
+ * CONNECT SIGNALING
+ */
 export function connectSignaling(connected = false, fns) {
   if (fns && ( fns.deliverToGame && fns.handleEnvelope)) {
     FNS.deliverToGame = fns.deliverToGame;
@@ -505,18 +535,3 @@ export function connectSignaling(connected = false, fns) {
     try { ws.close(); } catch {};
   });
 };
-
-// connectSignaling();
-
-// ———————————————————————————————————————————————————
-
-function leavePage() {
-  if (STATE.roomId) {
-    window.sessionStorage.setItem("roomId", STATE.roomId);
-  }
-}
-if (getDeviceType() === "PC") {
-  window.addEventListener("beforeunload", () => {
-    leavePage();
-  });
-}
